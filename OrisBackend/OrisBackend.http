@@ -1,6 +1,0 @@
-@OrisBackend_HostAddress = http://localhost:5168
-
-GET {{OrisBackend_HostAddress}}/weatherforecast/
-Accept: application/json
-
-###

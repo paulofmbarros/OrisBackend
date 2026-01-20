@@ -1,0 +1,6 @@
+@Oris.WebApplication_HostAddress = http://localhost:5134
+
+GET {{Oris.WebApplication_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
