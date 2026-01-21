@@ -6,6 +6,7 @@
 This contract is tool-agnostic. Any agent (Gemini/Claude/Codex/etc.) must follow it.
 
 ---
+**Repository:** https://github.com/paulofmbarros/OrisBackend
 
 ## Non-negotiable Workflow (Execute in this exact order)
 
@@ -26,8 +27,11 @@ For **every** ticket:
     - (Only what the ticket links)
 
 4) **Inspect the repository**
-    - Identify existing structure, conventions, and relevant code paths
-    - Do not assume missing files exist.
+   - Use GitHub MCP tools when possible (search_code → get_file_contents)
+   - Never call get_file_contents with an empty path
+   - Discover file paths via search_code (e.g. .sln, Program.cs, csproj)
+   - Identify existing structure, conventions, and relevant code paths
+   - Do not assume missing files exist.
 
 5) **Propose a plan**
     - Map each AC to concrete code changes
@@ -1627,8 +1631,8 @@ You must respond using this structure for every ticket:
 
 ## Execution Gate (Mandatory)
 
-**⚠️ DO NOT RUN SHELL COMMANDS, MODIFY FILES, OR APPLY EDITS UNTIL THE USER EXPLICITLY REPLIES:**
-
+⚠️ DO NOT MODIFY FILES, CREATE/UPDATE PRs, OR RUN LOCAL SHELL COMMANDS UNTIL: “Proceed with implementation”.
+Read-only inspection is allowed (via GitHub MCP search_code / get_file_contents, and reading existing files).
 ```
 "Proceed with implementation"
 ```
