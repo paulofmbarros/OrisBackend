@@ -77,6 +77,30 @@ Clean Architecture is mandatory:
 
 ---
 
+## Application Layer Structure (CQRS)
+
+Suggested structure:
+```
+src/Oris.Application/
+  Abstractions/
+  Commands/
+    <Feature>/
+      <Command>.cs
+      <CommandHandler>.cs
+      <CommandValidator>.cs
+  Queries/
+    <Feature>/
+      <Query>.cs
+      <QueryHandler>.cs
+      <QueryValidator>.cs (optional)
+  Dtos/
+  Common/
+    Behaviors/
+      ValidationBehavior.cs (if required by Cortex)
+
+```
+---
+
 ## Technology Constraints (MVP)
 
 - ASP.NET Core (.NET 10)
@@ -87,7 +111,28 @@ Clean Architecture is mandatory:
 - CI/CD: GitHub Actions + WebDeploy
 
 ---
+## Development Patterns (Mandatory)
 
+### CQRS
+- Use CQRS in the Application layer:
+    - Commands mutate state
+    - Queries read data
+- Commands/Queries must be explicit types (no “god service”).
+- API controllers must delegate to Application handlers only.
+
+### Mediator
+- Use Cortex.Mediator for dispatching Commands/Queries from API to Application.
+- API controllers must not call handlers directly.
+- Handlers live in Application layer.
+
+### Validation
+- Use FluentValidation for validating:
+    - Command inputs
+    - Query inputs (where applicable)
+- Validation should happen at the boundary (Application layer) before executing business logic.
+
+
+---
 ## Testing Requirements (Mandatory)
 
 Three layers must exist and be respected:
@@ -109,6 +154,18 @@ Three layers must exist and be respected:
 If tests are not added/updated, you must explain why.
 
 ---
+
+## Testing Stack (Mandatory)
+
+- Unit test framework: xUnit
+- Assertions: Shouldly
+- Mocking: Moq
+
+Rules:
+- Domain and Application tests use xUnit + Shouldly.
+- Use Moq only in unit tests (not integration tests).
+- Do not mix testing frameworks (no NUnit/MSTest).
+
 
 ## Absolute Rules (Hard Stops)
 
@@ -132,6 +189,8 @@ You must respond using this structure:
 - Backend Work Contract loaded: YES/NO
 - Referenced Notion pages loaded: YES/NO
 - Repo inspected: YES/NO
+  
+- If the Backend Work Contract is provided inline in the prompt, it MUST be treated as loaded and marked YES.
 
 ### Understanding
 - Objective:
@@ -153,3 +212,9 @@ You must respond using this structure:
 ### Jira Update Message
 (A copy-paste-ready comment for the Jira ticket)
 
+## Execution Gate (Mandatory)
+
+Do NOT run shell commands, modify files, or apply edits until the user explicitly replies:
+"Proceed with implementation".
+
+Until then, stop after "Proposed Plan".
