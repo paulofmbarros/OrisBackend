@@ -19,7 +19,21 @@ Follow these steps exactly to set up and use the AI Agent workflows.
 
 ---
 
-## Step 1.5: Add Gemini API Key (Required)
+## Step 1.5: Add API Keys (Required)
+
+### Gemini API Key (Required)
+1. Get your key from [Google AI Studio](https://aistudio.google.com/app/apikey)
+2. Add as secret: `GEMINI_API_KEY`
+
+### Notion API Key (Required for Notion access)
+**Important:** Your contract requires Notion access! See `.github/SETUP_NOTION_API_KEY.md` for detailed instructions.
+
+Quick setup:
+1. Create integration at [Notion Integrations](https://www.notion.so/my-integrations)
+2. Share your Notion pages with the integration
+3. Add token as secret: `NOTION_API_KEY`
+
+**Note:** MCP servers (like Atlassian Rovo for Jira) are optional. See `.github/SETUP_MCP_SERVERS.md` for Jira/Confluence integration.
 
 1. Go to [Google AI Studio](https://aistudio.google.com/app/apikey) and create an API key
 2. In your GitHub repository, go to **Settings** → **Secrets and variables** → **Actions**

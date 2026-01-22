@@ -88,6 +88,56 @@ jobs:
       - name: Install Gemini CLI
         run: npm install -g @google/gemini-cli
 
+      - name: Configure MCP Servers
+        run: |
+          mkdir -p ~/.gemini
+          
+          # Use Node.js to generate proper JSON
+          node << 'EOF'
+          const fs = require('fs');
+          const mcpServers = {};
+          
+          // Add Notion MCP (required for contract)
+          if (process.env.NOTION_API_KEY) {
+            mcpServers.notion = {
+              command: "npx",
+              args: ["-y", "@modelcontextprotocol/server-notion"],
+              env: {
+                NOTION_API_KEY: process.env.NOTION_API_KEY
+              }
+            };
+          }
+          
+          // Add Atlassian Rovo MCP (optional)
+          if (process.env.ATLASSIAN_MCP_URL) {
+            mcpServers["atlassian-rovo-mcp-server"] = {
+              url: process.env.ATLASSIAN_MCP_URL,
+              auth: {
+                type: "oauth2",
+                clientId: process.env.ATLASSIAN_MCP_CLIENT_ID,
+                clientSecret: process.env.ATLASSIAN_MCP_CLIENT_SECRET
+              }
+            };
+          }
+          
+          const config = {
+            mcpServers: mcpServers
+          };
+          
+          fs.writeFileSync(
+            process.env.HOME + '/.gemini/settings.json',
+            JSON.stringify(config, null, 2)
+          );
+          
+          console.log('MCP servers configured:');
+          console.log(JSON.stringify(config, null, 2));
+          EOF
+        env:
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          ATLASSIAN_MCP_URL: ${{ secrets.ATLASSIAN_MCP_URL }}
+          ATLASSIAN_MCP_CLIENT_ID: ${{ secrets.ATLASSIAN_MCP_CLIENT_ID }}
+          ATLASSIAN_MCP_CLIENT_SECRET: ${{ secrets.ATLASSIAN_MCP_CLIENT_SECRET }}
+
       - name: Setup environment
         run: |
           chmod +x scripts/agent.sh

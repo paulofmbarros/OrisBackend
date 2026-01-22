@@ -29,5 +29,5 @@ fi
 
 gemini \
   --approval-mode default \
-  --allowed-mcp-server-names atlassian-rovo-mcp-server \
+  --allowed-mcp-server-names notion,atlassian-rovo-mcp-server \
   "$FULL_PROMPT"
