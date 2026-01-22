@@ -1,0 +1,121 @@
+name: AI Agent - Proceed with Implementation
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  proceed:
+    if: github.event.comment.body == '/proceed' || contains(github.event.comment.body, '/proceed')
+    runs-on: ubuntu-latest
+    environment:
+      name: agent-implementation
+      # This creates the approval gate - configure required reviewers in GitHub Settings
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      checks: write
+      workflow-dispatch: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Find plan run ID from comment
+        id: find_plan
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Find the most recent plan comment with a run ID
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+            });
+            
+            // Look for comment with "Agent Plan Run ID"
+            let planRunId = null;
+            for (const comment of comments.data.reverse()) {
+              const match = comment.body.match(/Agent Plan Run ID: (\d+)/);
+              if (match) {
+                planRunId = match[1];
+                break;
+              }
+            }
+            
+            if (!planRunId) {
+              core.setFailed('Could not find plan run ID. Please ensure the plan workflow completed successfully.');
+              return;
+            }
+            
+            core.setOutput('run_id', planRunId);
+
+      - name: Download plan artifact
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          name: agent-plan
+          path: plan-artifact/
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          run_id: ${{ steps.find_plan.outputs.run_id }}
+          if_no_artifact_found: fail
+          workflow: agent-plan.yml
+
+      - name: Read plan context
+        id: plan_context
+        run: |
+          if [ -f plan-artifact/prompt.txt ]; then
+            PROMPT=$(cat plan-artifact/prompt.txt)
+            ROLE=$(cat plan-artifact/role.txt)
+            RUNTIME=$(cat plan-artifact/runtime.txt)
+          
+            echo "PROMPT=$PROMPT" >> $GITHUB_OUTPUT
+            echo "ROLE=$ROLE" >> $GITHUB_OUTPUT
+            echo "RUNTIME=$RUNTIME" >> $GITHUB_OUTPUT
+          else
+            echo "No plan artifact found. Please trigger the plan workflow first."
+            exit 1
+          fi
+
+      - name: Setup environment
+        run: |
+          chmod +x scripts/agent.sh
+          chmod +x scripts/runtimes/*.sh
+
+      - name: Run agent implementation phase
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Modify the prompt to include proceed instruction
+          PROCEED_PROMPT="${{ steps.plan_context.outputs.PROMPT }}
+          
+          Proceed with the implementation."
+          
+          ./scripts/agent.sh \
+            --runtime "${{ steps.plan_context.outputs.RUNTIME }}" \
+            --role "${{ steps.plan_context.outputs.ROLE }}" \
+            "$PROCEED_PROMPT"
+
+      - name: Post implementation summary
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = `## ✅ Implementation Complete
+            
+            The AI Agent has completed the implementation based on the approved plan.
+            
+            **Next steps:**
+            - Review the changes in this PR
+            - Run tests locally if needed
+            - Merge when ready`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.payload.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
