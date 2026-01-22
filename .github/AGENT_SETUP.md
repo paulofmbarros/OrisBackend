@@ -28,6 +28,10 @@ If your `gemini` CLI requires authentication or API keys:
 1. Go to **Settings** → **Secrets and variables** → **Actions**
 2. Add any required secrets (e.g., `GEMINI_API_KEY`)
 
+**Note:** The workflows automatically install the Gemini CLI via npm. If you need to authenticate, you may need to:
+- Set up authentication via environment variables
+- Or configure the CLI with credentials before running
+
 ### 3. Workflow Triggers
 
 The workflow can be triggered in several ways:
@@ -37,9 +41,9 @@ The workflow can be triggered in several ways:
 2. Select **AI Agent - Plan Phase**
 3. Click **Run workflow**
 4. Enter:
-    - Jira ticket: `OR-25` (or your ticket key)
-    - Role: `backend`
-    - Runtime: `gemini`
+   - Jira ticket: `OR-25` (or your ticket key)
+   - Role: `backend`
+   - Runtime: `gemini`
 
 #### Option B: PR Trigger
 - Automatically triggers when a PR is opened/updated
@@ -54,13 +58,13 @@ The workflow can be triggered in several ways:
 
 1. **Plan Phase** runs automatically and generates a plan
 2. The plan is posted as:
-    - A comment on the issue/PR
-    - A check run summary
+   - A comment on the issue/PR
+   - A check run summary
 3. **Review the plan** in the comment or check run
 4. **Choose an action:**
-    - ✅ **Approve**: Click **Review deployments** button or comment `/proceed`
-    - 🔄 **Revise**: Comment `/revise <your feedback>` to request changes
-    - ❌ **Cancel**: Close the issue/PR
+   - ✅ **Approve**: Click **Review deployments** button or comment `/proceed`
+   - 🔄 **Revise**: Comment `/revise <your feedback>` to request changes
+   - ❌ **Cancel**: Close the issue/PR
 5. **If revising**: A new plan is generated based on your feedback
 6. **If approving**: **Implementation Phase** runs after approval
 7. Changes are committed to the branch

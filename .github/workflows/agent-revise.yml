@@ -136,6 +136,14 @@ jobs:
           if_no_artifact_found: warn
           workflow: agent-plan.yml
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Gemini CLI
+        run: npm install -g @google/gemini-cli
+
       - name: Setup environment
         run: |
           chmod +x scripts/agent.sh
