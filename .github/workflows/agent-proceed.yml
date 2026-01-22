@@ -16,7 +16,7 @@ jobs:
       issues: write
       pull-requests: write
       checks: write
-      workflow-dispatch: write
+      actions: read
 
     steps:
       - name: Checkout repository
