@@ -255,6 +255,31 @@ jobs:
           
           rm -f "$OUTPUT_FILE" "$ERROR_FILE"
 
+      - name: Display plan output in workflow
+        if: steps.agent_plan.outputs.PLAN_OUTPUT != ''
+        run: |
+          echo "## 🤖 AI Agent Plan Output" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat plan-artifact/plan-output.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          
+          # Also output to console for immediate visibility
+          echo "=== AI Agent Plan Output ==="
+          cat plan-artifact/plan-output.txt
+
+      - name: Display plan errors (if any)
+        if: steps.agent_plan.outputs.PLAN_ERROR != ''
+        run: |
+          echo "## ⚠️ Plan Generation Errors" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat plan-artifact/plan-error.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          
+          echo "=== Errors ==="
+          cat plan-artifact/plan-error.txt
+
       - name: Upload plan artifact
         uses: actions/upload-artifact@v4
         with:
@@ -311,19 +336,26 @@ jobs:
             const conclusion = exitCode === 0 ? 'success' : 'failure';
             const title = exitCode === 0 ? '✅ Plan Generated' : '❌ Plan Generation Failed';
             
+            // Truncate very long outputs for check run (GitHub has limits)
+            const maxLength = 65000; // GitHub check run output limit
+            let displayOutput = planOutput;
+            if (displayOutput.length > maxLength) {
+              displayOutput = planOutput.substring(0, maxLength - 100) + '\n\n... (output truncated, see workflow summary or comments for full output)';
+            }
+            
             const output = {
               title: title,
               summary: exitCode === 0 
-                ? 'AI Agent has generated a plan. Review and approve to proceed with implementation.'
+                ? 'AI Agent has generated a plan. **View the full output in the workflow summary above or in PR comments.**'
                 : 'AI Agent failed to generate a plan. Check the output for errors.',
-              text: planOutput + (planError ? '\n\n---\n\n**Errors:**\n' + planError : '')
+              text: displayOutput + (planError ? '\n\n---\n\n**Errors:**\n' + planError : '')
             };
             
             await github.rest.checks.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
               name: 'AI Agent Plan',
-              head_sha: context.sha,
+              head_sha: context.sha || context.sha,
               status: 'completed',
               conclusion: conclusion,
               output: output
@@ -379,18 +411,72 @@ jobs:
           chmod +x scripts/runtimes/*.sh
 
       - name: Run agent implementation phase
+        id: agent_implement
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           AGENT_PROCEED: "true"
         run: |
+          set +e  # Don't fail immediately, capture output
+          
+          OUTPUT_FILE=$(mktemp)
+          ERROR_FILE=$(mktemp)
+          
           # Modify the prompt to include proceed instruction
           PROCEED_PROMPT="${{ steps.plan_context.outputs.PROMPT }}"$'\n\n'"Proceed with the implementation."
           
           ./scripts/agent.sh \
             --runtime "${{ steps.plan_context.outputs.RUNTIME }}" \
             --role "${{ steps.plan_context.outputs.ROLE }}" \
-            "$PROCEED_PROMPT"
+            "$PROCEED_PROMPT" \
+            > "$OUTPUT_FILE" 2> "$ERROR_FILE"
+          
+          EXIT_CODE=$?
+          
+          # Save outputs for display
+          echo "IMPLEMENTATION_OUTPUT<<EOF" >> $GITHUB_OUTPUT
+          cat "$OUTPUT_FILE" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          echo "IMPLEMENTATION_ERROR<<EOF" >> $GITHUB_OUTPUT
+          cat "$ERROR_FILE" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          echo "EXIT_CODE=$EXIT_CODE" >> $GITHUB_OUTPUT
+          
+          # Save to files for summary
+          mkdir -p implementation-artifact
+          cp "$OUTPUT_FILE" implementation-artifact/output.txt
+          cp "$ERROR_FILE" implementation-artifact/error.txt
+          
+          rm -f "$OUTPUT_FILE" "$ERROR_FILE"
+          
+          exit $EXIT_CODE
+
+      - name: Display implementation output
+        if: always()
+        run: |
+          if [ -f implementation-artifact/output.txt ]; then
+            echo "## ✅ Implementation Output" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat implementation-artifact/output.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          
+            echo "=== Implementation Output ==="
+            cat implementation-artifact/output.txt
+          fi
+          
+          if [ -f implementation-artifact/error.txt ] && [ -s implementation-artifact/error.txt ]; then
+            echo "## ⚠️ Implementation Errors" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat implementation-artifact/error.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          
+            echo "=== Errors ==="
+            cat implementation-artifact/error.txt
+          fi
 
       - name: Create implementation summary
         if: success()

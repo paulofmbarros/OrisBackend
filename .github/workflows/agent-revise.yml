@@ -194,6 +194,18 @@ jobs:
           
           rm -f "$OUTPUT_FILE" "$ERROR_FILE"
 
+      - name: Display revised plan output
+        if: steps.agent_revision.outputs.PLAN_OUTPUT != ''
+        run: |
+          echo "## 🔄 AI Agent Revised Plan Output" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat plan-artifact/plan-output.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          
+          echo "=== Revised Plan Output ==="
+          cat plan-artifact/plan-output.txt
+
       - name: Upload revised plan artifact
         uses: actions/upload-artifact@v4
         with:

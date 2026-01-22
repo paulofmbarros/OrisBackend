@@ -62,9 +62,10 @@ The workflow can be triggered in several ways:
 ### 4. Approval Process
 
 1. **Plan Phase** runs automatically and generates a plan
-2. The plan is posted as:
-   - A comment on the issue/PR
-   - A check run summary
+2. The plan output is visible in **three places**:
+   - **Workflow Summary** (Actions tab → workflow run → top of page) - Full output, no download needed
+   - **PR/Issue Comments** - Automatically posted for easy review
+   - **Check Runs** - Status summary in the checks section
 3. **Review the plan** in the comment or check run
 4. **Choose an action:**
    - ✅ **Approve**: Click **Review deployments** button or comment `/proceed`

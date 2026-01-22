@@ -71,7 +71,10 @@ git push
    - **Runtime**: `gemini`
 6. Click the green **Run workflow** button
 7. Wait for the workflow to run (watch the progress)
-8. Check the output - you should see a plan generated
+8. **View the output** - You can see the plan in three places:
+   - **Workflow Summary** (at the top of the Actions run page) - Full output displayed
+   - **PR/Issue Comments** - Plan posted as a comment
+   - **Check Runs** - Summary in the checks section
 
 ### Option B: Create a Test PR
 
@@ -90,10 +93,21 @@ git push
 
 ## Step 4: Review and Approve the Plan
 
-After the plan is generated, you'll see:
+After the plan is generated, you'll see the output in **three places**:
 
-1. **A comment on the PR/Issue** with the plan
-2. **A check run** showing the plan status
+1. **Workflow Summary** (best for full output):
+   - Go to the **Actions** tab
+   - Click on the workflow run
+   - Scroll to the top - you'll see a "Summary" section with the full plan output
+   - No download needed - it's all visible right there!
+
+2. **PR/Issue Comments**:
+   - The plan is automatically posted as a comment
+   - Easy to review and discuss
+
+3. **Check Runs**:
+   - Shows in the checks section of the PR
+   - Quick status overview
 
 ### To Approve and Proceed:
 

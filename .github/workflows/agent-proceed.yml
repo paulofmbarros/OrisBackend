@@ -94,17 +94,69 @@ jobs:
           chmod +x scripts/runtimes/*.sh
 
       - name: Run agent implementation phase
+        id: agent_implement
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
+          set +e  # Don't fail immediately, capture output
+          
+          OUTPUT_FILE=$(mktemp)
+          ERROR_FILE=$(mktemp)
+          
           # Modify the prompt to include proceed instruction
           PROCEED_PROMPT="${{ steps.plan_context.outputs.PROMPT }}"$'\n\n'"Proceed with the implementation."
           
           ./scripts/agent.sh \
             --runtime "${{ steps.plan_context.outputs.RUNTIME }}" \
             --role "${{ steps.plan_context.outputs.ROLE }}" \
-            "$PROCEED_PROMPT"
+            "$PROCEED_PROMPT" \
+            > "$OUTPUT_FILE" 2> "$ERROR_FILE"
+          
+          EXIT_CODE=$?
+          
+          # Save outputs
+          echo "IMPLEMENTATION_OUTPUT<<EOF" >> $GITHUB_OUTPUT
+          cat "$OUTPUT_FILE" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          echo "IMPLEMENTATION_ERROR<<EOF" >> $GITHUB_OUTPUT
+          cat "$ERROR_FILE" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          # Save to files for summary
+          mkdir -p implementation-artifact
+          cp "$OUTPUT_FILE" implementation-artifact/output.txt
+          cp "$ERROR_FILE" implementation-artifact/error.txt
+          
+          rm -f "$OUTPUT_FILE" "$ERROR_FILE"
+          
+          exit $EXIT_CODE
+
+      - name: Display implementation output
+        if: always()
+        run: |
+          if [ -f implementation-artifact/output.txt ]; then
+            echo "## ✅ Implementation Output" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat implementation-artifact/output.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          
+            echo "=== Implementation Output ==="
+            cat implementation-artifact/output.txt
+          fi
+          
+          if [ -f implementation-artifact/error.txt ] && [ -s implementation-artifact/error.txt ]; then
+            echo "## ⚠️ Implementation Errors" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat implementation-artifact/error.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          
+            echo "=== Errors ==="
+            cat implementation-artifact/error.txt
+          fi
 
       - name: Post implementation summary
         if: success()
