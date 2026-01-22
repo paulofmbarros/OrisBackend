@@ -254,6 +254,30 @@ jobs:
           fi
           
           rm -f "$OUTPUT_FILE" "$ERROR_FILE"
+          
+          # Re-enable exit on error and fail if there were errors
+          set -e
+          
+          # Check for errors and fail if any
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "❌ Agent planning phase failed with exit code: $EXIT_CODE"
+            if [ -s plan-artifact/plan-error.txt ]; then
+              echo "Error output:"
+              cat plan-artifact/plan-error.txt
+            fi
+            exit $EXIT_CODE
+          fi
+          
+          # Also check if error file has content (even if exit code was 0)
+          if [ -s plan-artifact/plan-error.txt ]; then
+            ERROR_CONTENT=$(cat plan-artifact/plan-error.txt)
+            # Check for common error patterns
+            if echo "$ERROR_CONTENT" | grep -qiE "(error|failed|exception|command not found|permission denied|not found)"; then
+              echo "❌ Errors detected in plan generation:"
+              echo "$ERROR_CONTENT"
+              exit 1
+            fi
+          fi
 
       - name: Display plan output in workflow
         if: steps.agent_plan.outputs.PLAN_OUTPUT != ''
@@ -269,7 +293,7 @@ jobs:
           cat plan-artifact/plan-output.txt
 
       - name: Display plan errors (if any)
-        if: steps.agent_plan.outputs.PLAN_ERROR != ''
+        if: always() && steps.agent_plan.outputs.PLAN_ERROR != ''
         run: |
           echo "## ⚠️ Plan Generation Errors" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -279,6 +303,12 @@ jobs:
           
           echo "=== Errors ==="
           cat plan-artifact/plan-error.txt
+          
+          # Fail if we reach here and there are errors (shouldn't happen due to previous step, but safety check)
+          if [ "${{ steps.agent_plan.outputs.EXIT_CODE }}" != "0" ]; then
+            echo "❌ Plan generation failed. See errors above."
+            exit 1
+          fi
 
       - name: Upload plan artifact
         uses: actions/upload-artifact@v4

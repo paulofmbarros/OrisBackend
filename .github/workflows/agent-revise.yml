@@ -243,6 +243,30 @@ jobs:
           echo "$REVISION_FEEDBACK" > plan-artifact/revision-feedback.txt
           
           rm -f "$OUTPUT_FILE" "$ERROR_FILE"
+          
+          # Re-enable exit on error and fail if there were errors
+          set -e
+          
+          # Check for errors and fail if any
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "❌ Agent revision phase failed with exit code: $EXIT_CODE"
+            if [ -s plan-artifact/plan-error.txt ]; then
+              echo "Error output:"
+              cat plan-artifact/plan-error.txt
+            fi
+            exit $EXIT_CODE
+          fi
+          
+          # Also check if error file has content (even if exit code was 0)
+          if [ -s plan-artifact/plan-error.txt ]; then
+            ERROR_CONTENT=$(cat plan-artifact/plan-error.txt)
+            # Check for common error patterns
+            if echo "$ERROR_CONTENT" | grep -qiE "(error|failed|exception|command not found|permission denied|not found)"; then
+              echo "❌ Errors detected in plan revision:"
+              echo "$ERROR_CONTENT"
+              exit 1
+            fi
+          fi
 
       - name: Display revised plan output
         if: steps.agent_revision.outputs.PLAN_OUTPUT != ''
