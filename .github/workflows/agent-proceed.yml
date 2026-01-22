@@ -96,6 +96,7 @@ jobs:
       - name: Run agent implementation phase
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           # Modify the prompt to include proceed instruction
           PROCEED_PROMPT="${{ steps.plan_context.outputs.PROMPT }}"$'\n\n'"Proceed with the implementation."

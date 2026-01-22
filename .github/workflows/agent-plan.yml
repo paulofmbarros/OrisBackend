@@ -182,6 +182,7 @@ jobs:
         id: agent_plan
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           set +e  # Don't fail on non-zero exit, we want to capture output
           
@@ -380,6 +381,7 @@ jobs:
       - name: Run agent implementation phase
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           AGENT_PROCEED: "true"
         run: |
           # Modify the prompt to include proceed instruction

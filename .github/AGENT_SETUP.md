@@ -22,15 +22,20 @@ The workflow consists of two phases:
 
 This creates the approval gate that will show a "Review deployments" button when the workflow reaches the implementation phase.
 
-### 2. Configure Secrets (if needed)
+### 2. Configure Gemini API Key (Required)
 
-If your `gemini` CLI requires authentication or API keys:
-1. Go to **Settings** → **Secrets and variables** → **Actions**
-2. Add any required secrets (e.g., `GEMINI_API_KEY`)
+The Gemini CLI requires an API key to authenticate. Set it up as follows:
 
-**Note:** The workflows automatically install the Gemini CLI via npm. If you need to authenticate, you may need to:
-- Set up authentication via environment variables
-- Or configure the CLI with credentials before running
+1. Get your API key from [Google AI Studio](https://aistudio.google.com/app/apikey)
+2. Go to **Settings** → **Secrets and variables** → **Actions**
+3. Click **New repository secret**
+4. Name: `GEMINI_API_KEY` (must match exactly, case-sensitive)
+5. Value: Paste your Gemini API key
+6. Click **Add secret**
+
+**Note:** The workflows are already configured to use this secret. Once added, all workflows will automatically authenticate.
+
+**See `.github/SETUP_GEMINI_API_KEY.md` for detailed step-by-step instructions.**
 
 ### 3. Workflow Triggers
 

@@ -19,6 +19,21 @@ Follow these steps exactly to set up and use the AI Agent workflows.
 
 ---
 
+## Step 1.5: Add Gemini API Key (Required)
+
+1. Go to [Google AI Studio](https://aistudio.google.com/app/apikey) and create an API key
+2. In your GitHub repository, go to **Settings** → **Secrets and variables** → **Actions**
+3. Click **New repository secret**
+4. Name: `GEMINI_API_KEY` (exact match, case-sensitive)
+5. Value: Paste your Gemini API key
+6. Click **Add secret**
+
+✅ **Done!** The workflows will now be able to authenticate with Gemini.
+
+**See `.github/SETUP_GEMINI_API_KEY.md` for detailed instructions.**
+
+---
+
 ## Step 2: Verify Workflow Files Are Committed
 
 Make sure these files are in your repository:
@@ -51,9 +66,9 @@ git push
 3. In the left sidebar, click **AI Agent - Plan Phase**
 4. Click **Run workflow** (dropdown button on the right)
 5. Fill in:
-    - **Jira ticket**: `OR-25` (or any ticket key)
-    - **Role**: `backend`
-    - **Runtime**: `gemini`
+   - **Jira ticket**: `OR-25` (or any ticket key)
+   - **Role**: `backend`
+   - **Runtime**: `gemini`
 6. Click the green **Run workflow** button
 7. Wait for the workflow to run (watch the progress)
 8. Check the output - you should see a plan generated
@@ -145,8 +160,8 @@ After approval:
 2. **Comment**: `/agent Work on Jira ticket OR-25`
 3. **Wait** for plan
 4. **Review** and either:
-    - Comment `/revise <feedback>` to change it
-    - Comment `/proceed` to approve
+   - Comment `/revise <feedback>` to change it
+   - Comment `/proceed` to approve
 5. **Review** implementation when complete
 
 ---
