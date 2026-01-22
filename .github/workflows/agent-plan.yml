@@ -98,6 +98,9 @@ jobs:
       - name: Install Gemini CLI
         run: npm install -g @google/gemini-cli
 
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex
+
       - name: Setup environment
         run: |
           # Make scripts executable
@@ -183,6 +186,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set +e  # Don't fail on non-zero exit, we want to capture output
           
@@ -435,6 +439,9 @@ jobs:
       - name: Install Gemini CLI
         run: npm install -g @google/gemini-cli
 
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex
+
       - name: Configure MCP Servers
         run: |
           mkdir -p ~/.gemini
@@ -495,6 +502,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           AGENT_PROCEED: "true"
         run: |
           set +e  # Don't fail immediately, capture output
