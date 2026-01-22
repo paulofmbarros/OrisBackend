@@ -90,9 +90,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Modify the prompt to include proceed instruction
-          PROCEED_PROMPT="${{ steps.plan_context.outputs.PROMPT }}
-          
-          Proceed with the implementation."
+          PROCEED_PROMPT="${{ steps.plan_context.outputs.PROMPT }}"$'\n\n'"Proceed with the implementation."
           
           ./scripts/agent.sh \
             --runtime "${{ steps.plan_context.outputs.RUNTIME }}" \

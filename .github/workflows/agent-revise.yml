@@ -155,77 +155,71 @@ jobs:
           REVISION_FEEDBACK="${{ steps.extract_revision.outputs.REVISION_FEEDBACK }}"
           
           # Build enhanced prompt with revision feedback
-          ENHANCED_PROMPT="$ORIGINAL_PROMPT
+          ENHANCED_PROMPT="$ORIGINAL_PROMPT"$'\n\n'"REVISION REQUEST:"$'\n'"The previous plan needs to be revised based on the following feedback:"$'\n'"$REVISION_FEEDBACK"$'\n\n'"Please generate a revised plan that addresses this feedback while maintaining alignment with the original requirements."
+          
+          # Run agent
+          ./scripts/agent.sh \
+            --runtime gemini \
+            --role backend \
+            "$ENHANCED_PROMPT" \
+            > "$OUTPUT_FILE" 2> "$ERROR_FILE"
+          
+          EXIT_CODE=$?
+          
+          # Save outputs
+          echo "PLAN_OUTPUT<<EOF" >> $GITHUB_OUTPUT
+          cat "$OUTPUT_FILE" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          echo "EXIT_CODE=$EXIT_CODE" >> $GITHUB_OUTPUT
+          
+          # Save to artifact
+          mkdir -p plan-artifact
+          cp "$OUTPUT_FILE" plan-artifact/plan-output.txt
+          cp "$ERROR_FILE" plan-artifact/plan-error.txt
+          echo "$ENHANCED_PROMPT" > plan-artifact/prompt.txt
+          echo "backend" > plan-artifact/role.txt
+          echo "gemini" > plan-artifact/runtime.txt
+          echo "true" > plan-artifact/is-revision.txt
+          echo "$REVISION_FEEDBACK" > plan-artifact/revision-feedback.txt
+          
+          rm -f "$OUTPUT_FILE" "$ERROR_FILE"
 
-REVISION REQUEST:
-The previous plan needs to be revised based on the following feedback:
-  $REVISION_FEEDBACK
-  
-  Please generate a revised plan that addresses this feedback while maintaining alignment with the original requirements."
-  
-  # Run agent
-  ./scripts/agent.sh \
-  --runtime gemini \
-  --role backend \
-  "$ENHANCED_PROMPT" \
-  > "$OUTPUT_FILE" 2> "$ERROR_FILE"
-  
-  EXIT_CODE=$?
-  
-  # Save outputs
-  echo "PLAN_OUTPUT<<EOF" >> $GITHUB_OUTPUT
-  cat "$OUTPUT_FILE" >> $GITHUB_OUTPUT
-  echo "EOF" >> $GITHUB_OUTPUT
-  
-  echo "EXIT_CODE=$EXIT_CODE" >> $GITHUB_OUTPUT
-  
-  # Save to artifact
-  mkdir -p plan-artifact
-  cp "$OUTPUT_FILE" plan-artifact/plan-output.txt
-  cp "$ERROR_FILE" plan-artifact/plan-error.txt
-  echo "$ENHANCED_PROMPT" > plan-artifact/prompt.txt
-  echo "backend" > plan-artifact/role.txt
-  echo "gemini" > plan-artifact/runtime.txt
-  echo "true" > plan-artifact/is-revision.txt
-  echo "$REVISION_FEEDBACK" > plan-artifact/revision-feedback.txt
-  
-  rm -f "$OUTPUT_FILE" "$ERROR_FILE"
+      - name: Upload revised plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-plan
+          path: plan-artifact/
+          retention-days: 7
 
-- name: Upload revised plan artifact
-  uses: actions/upload-artifact@v4
-  with:
-    name: agent-plan
-    path: plan-artifact/
-    retention-days: 7
-
-- name: Post revised plan as comment
-  uses: actions/github-script@v7
-  with:
-    script: |
-      const issueNumber = parseInt('${{ steps.extract_revision.outputs.ISSUE_NUMBER }}');
-      const planOutput = `${{ steps.agent_revision.outputs.PLAN_OUTPUT }}`;
-      const revisionFeedback = `${{ steps.extract_revision.outputs.REVISION_FEEDBACK }}`;
-      
-      const body = `## 🔄 AI Agent Plan (Revised)
-      
-      > **Revision Feedback:** ${revisionFeedback}
-      
-      ${planOutput}
-      
-      ---
-      
-      ### ⚠️ Review Required
-      
-      **Options:**
-      1. ✅ **Approve and proceed**: Click the "Review deployments" button below and approve, or comment: \`/proceed\`
-      2. 🔄 **Request more changes**: Comment: \`/revise <your feedback here>\` to modify the plan again
-      3. ❌ **Cancel**: Close this issue/PR
-      
-      <!-- Agent Plan Run ID: ${process.env.GITHUB_RUN_ID} -->`;
-      
-      github.rest.issues.createComment({
-        issue_number: issueNumber,
-        owner: context.repo.owner,
-        repo: context.repo.repo,
-        body: body
-      });
+      - name: Post revised plan as comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueNumber = parseInt('${{ steps.extract_revision.outputs.ISSUE_NUMBER }}');
+            const planOutput = `${{ steps.agent_revision.outputs.PLAN_OUTPUT }}`;
+            const revisionFeedback = `${{ steps.extract_revision.outputs.REVISION_FEEDBACK }}`;
+            
+            const body = `## 🔄 AI Agent Plan (Revised)
+            
+            > **Revision Feedback:** ${revisionFeedback}
+            
+            ${planOutput}
+            
+            ---
+            
+            ### ⚠️ Review Required
+            
+            **Options:**
+            1. ✅ **Approve and proceed**: Click the "Review deployments" button below and approve, or comment: \`/proceed\`
+            2. 🔄 **Request more changes**: Comment: \`/revise <your feedback here>\` to modify the plan again
+            3. ❌ **Cancel**: Close this issue/PR
+            
+            <!-- Agent Plan Run ID: ${process.env.GITHUB_RUN_ID} -->`;
+            
+            github.rest.issues.createComment({
+              issue_number: issueNumber,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });

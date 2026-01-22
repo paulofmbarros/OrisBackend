@@ -192,225 +192,217 @@ jobs:
             fi
           
             # Create enhanced prompt with revision feedback
-            ENHANCED_PROMPT="$ORIGINAL_PROMPT
-
-REVISION REQUEST:
-The previous plan needs to be revised based on the following feedback:
-  $REVISION_FEEDBACK
-  
-  Please generate a revised plan that addresses this feedback while maintaining alignment with the original requirements."
-  else
-  ENHANCED_PROMPT="${{ steps.context.outputs.PROMPT }}"
-  fi
-  
-  # Run agent and capture output
-  ./scripts/agent.sh \
-  --runtime "${{ steps.context.outputs.RUNTIME }}" \
-  --role "${{ steps.context.outputs.ROLE }}" \
-  "$ENHANCED_PROMPT" \
-  > "$OUTPUT_FILE" 2> "$ERROR_FILE"
-  
-  EXIT_CODE=$?
-  
-  # Save outputs
-  echo "PLAN_OUTPUT<<EOF" >> $GITHUB_OUTPUT
-  cat "$OUTPUT_FILE" >> $GITHUB_OUTPUT
-  echo "EOF" >> $GITHUB_OUTPUT
-  
-  echo "PLAN_ERROR<<EOF" >> $GITHUB_OUTPUT
-  cat "$ERROR_FILE" >> $GITHUB_OUTPUT
-  echo "EOF" >> $GITHUB_OUTPUT
-  
-  echo "EXIT_CODE=$EXIT_CODE" >> $GITHUB_OUTPUT
-  
-  # Extract plan section (everything after "### Proposed Plan")
-  PLAN_SECTION=$(awk '/### Proposed Plan/,/### Architecture Verification|### Implementation|^---$|^$/{print}' "$OUTPUT_FILE" | head -n -1)
-  echo "PLAN_SECTION<<EOF" >> $GITHUB_OUTPUT
-  echo "$PLAN_SECTION" >> $GITHUB_OUTPUT
-  echo "EOF" >> $GITHUB_OUTPUT
-  
-  # Save to artifact for next job
-  mkdir -p plan-artifact
-  cp "$OUTPUT_FILE" plan-artifact/plan-output.txt
-  cp "$ERROR_FILE" plan-artifact/plan-error.txt
-  
-  # Save the enhanced prompt (original or with revision)
-  if [ "${{ steps.context.outputs.IS_REVISION }}" = "true" ]; then
-  echo "$ENHANCED_PROMPT" > plan-artifact/prompt.txt
-  else
-  echo "${{ steps.context.outputs.PROMPT }}" > plan-artifact/prompt.txt
-  fi
-  
-  echo "${{ steps.context.outputs.ROLE }}" > plan-artifact/role.txt
-  echo "${{ steps.context.outputs.RUNTIME }}" > plan-artifact/runtime.txt
-  
-  # Mark if this is a revision
-  echo "${{ steps.context.outputs.IS_REVISION }}" > plan-artifact/is-revision.txt
-  if [ "${{ steps.context.outputs.IS_REVISION }}" = "true" ]; then
-  echo "${{ steps.context.outputs.REVISION_FEEDBACK }}" > plan-artifact/revision-feedback.txt
-  fi
-  
-  rm -f "$OUTPUT_FILE" "$ERROR_FILE"
-
-- name: Upload plan artifact
-  uses: actions/upload-artifact@v4
-  with:
-    name: agent-plan
-    path: plan-artifact/
-    retention-days: 7
-
-- name: Post plan as comment
-  if: steps.context.outputs.ISSUE_NUMBER != ''
-  uses: actions/github-script@v7
-  with:
-    script: |
-      const issueNumber = '${{ steps.context.outputs.ISSUE_NUMBER }}';
-      const planOutput = `${{ steps.agent_plan.outputs.PLAN_OUTPUT }}`;
-      const planSection = `${{ steps.agent_plan.outputs.PLAN_SECTION }}`;
-      
-      const isRevision = '${{ steps.context.outputs.IS_REVISION }}' === 'true';
-      const revisionHeader = isRevision ? '## 🔄 AI Agent Plan (Revised)\n\n' : '## 🤖 AI Agent Plan\n\n';
-      const revisionNote = isRevision 
-        ? '> **Note:** This is a revised plan based on your feedback.\n\n' 
-        : '';
-      
-      const body = `${revisionHeader}${revisionNote}${planOutput}
-      
-      ---
-      
-      ### ⚠️ Review Required
-      
-      **Options:**
-      1. ✅ **Approve and proceed**: Click the "Review deployments" button below and approve, or comment: \`/proceed\`
-      2. 🔄 **Request changes**: Comment: \`/revise <your feedback here>\` to modify the plan
-      3. ❌ **Cancel**: Close this issue/PR
-      
-      **Example revision:**
-      \`/revise Please use a different approach for authentication. Consider using JWT tokens instead.\`
-      
-      <!-- Agent Plan Run ID: ${process.env.GITHUB_RUN_ID} -->`;
-      
-      github.rest.issues.createComment({
-        issue_number: issueNumber,
-        owner: context.repo.owner,
-        repo: context.repo.repo,
-        body: body
-      });
-
-- name: Create check run with plan
-  uses: actions/github-script@v7
-  with:
-    script: |
-      const planOutput = `${{ steps.agent_plan.outputs.PLAN_OUTPUT }}`;
-      const planError = `${{ steps.agent_plan.outputs.PLAN_ERROR }}`;
-      const exitCode = parseInt('${{ steps.agent_plan.outputs.EXIT_CODE }}');
-      
-      const conclusion = exitCode === 0 ? 'success' : 'failure';
-      const title = exitCode === 0 ? '✅ Plan Generated' : '❌ Plan Generation Failed';
-      
-      const output = {
-        title: title,
-        summary: exitCode === 0 
-          ? 'AI Agent has generated a plan. Review and approve to proceed with implementation.'
-          : 'AI Agent failed to generate a plan. Check the output for errors.',
-        text: planOutput + (planError ? '\n\n---\n\n**Errors:**\n' + planError : '')
-      };
-      
-      await github.rest.checks.create({
-        owner: context.repo.owner,
-        repo: context.repo.repo,
-        name: 'AI Agent Plan',
-        head_sha: context.sha,
-        status: 'completed',
-        conclusion: conclusion,
-        output: output
-      });
-
-implement:
-  needs: plan
-  runs-on: ubuntu-latest
-  environment:
-    name: agent-implementation
-    # This creates the approval gate - configure required reviewers in GitHub Settings
-  permissions:
-    contents: write
-    issues: write
-    pull-requests: write
-    checks: write
-
-  steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        fetch-depth: 0
-
-    - name: Download plan artifact
-      uses: actions/download-artifact@v4
-      with:
-        name: agent-plan
-        path: plan-artifact/
-
-    - name: Read plan context
-      id: plan_context
-      run: |
-        PROMPT=$(cat plan-artifact/prompt.txt)
-        ROLE=$(cat plan-artifact/role.txt)
-        RUNTIME=$(cat plan-artifact/runtime.txt)
-        
-        echo "PROMPT=$PROMPT" >> $GITHUB_OUTPUT
-        echo "ROLE=$ROLE" >> $GITHUB_OUTPUT
-        echo "RUNTIME=$RUNTIME" >> $GITHUB_OUTPUT
-
-    - name: Setup environment
-      run: |
-        chmod +x scripts/agent.sh
-        chmod +x scripts/runtimes/*.sh
-
-    - name: Run agent implementation phase
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        AGENT_PROCEED: "true"
-      run: |
-        # Modify the prompt to include proceed instruction
-        PROCEED_PROMPT="${{ steps.plan_context.outputs.PROMPT }}
-        
-        Proceed with the implementation."
-        
-        ./scripts/agent.sh \
-          --runtime "${{ steps.plan_context.outputs.RUNTIME }}" \
-          --role "${{ steps.plan_context.outputs.ROLE }}" \
-          "$PROCEED_PROMPT"
-
-    - name: Create implementation summary
-      if: success()
-      uses: actions/github-script@v7
-      with:
-        script: |
-          const body = `## ✅ Implementation Complete
+            ENHANCED_PROMPT="$ORIGINAL_PROMPT"$'\n\n'"REVISION REQUEST:"$'\n'"The previous plan needs to be revised based on the following feedback:"$'\n'"$REVISION_FEEDBACK"$'\n\n'"Please generate a revised plan that addresses this feedback while maintaining alignment with the original requirements."
+          else
+            ENHANCED_PROMPT="${{ steps.context.outputs.PROMPT }}"
+          fi
           
-          The AI Agent has completed the implementation based on the approved plan.
+          # Run agent and capture output
+          ./scripts/agent.sh \
+            --runtime "${{ steps.context.outputs.RUNTIME }}" \
+            --role "${{ steps.context.outputs.ROLE }}" \
+            "$ENHANCED_PROMPT" \
+            > "$OUTPUT_FILE" 2> "$ERROR_FILE"
           
-          **Next steps:**
-          - Review the changes in this PR
-          - Run tests locally if needed
-          - Merge when ready
+          EXIT_CODE=$?
           
-          <!-- Implementation for Plan ID: ${process.env.GITHUB_RUN_ID} -->`;
+          # Save outputs
+          echo "PLAN_OUTPUT<<EOF" >> $GITHUB_OUTPUT
+          cat "$OUTPUT_FILE" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
           
-          // Try to find the issue/PR number from context
-          if (context.payload.issue) {
+          echo "PLAN_ERROR<<EOF" >> $GITHUB_OUTPUT
+          cat "$ERROR_FILE" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          echo "EXIT_CODE=$EXIT_CODE" >> $GITHUB_OUTPUT
+          
+          # Extract plan section (everything after "### Proposed Plan")
+          PLAN_SECTION=$(awk '/### Proposed Plan/,/### Architecture Verification|### Implementation|^---$|^$/{print}' "$OUTPUT_FILE" | head -n -1)
+          echo "PLAN_SECTION<<EOF" >> $GITHUB_OUTPUT
+          echo "$PLAN_SECTION" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          # Save to artifact for next job
+          mkdir -p plan-artifact
+          cp "$OUTPUT_FILE" plan-artifact/plan-output.txt
+          cp "$ERROR_FILE" plan-artifact/plan-error.txt
+          
+          # Save the enhanced prompt (original or with revision)
+          if [ "${{ steps.context.outputs.IS_REVISION }}" = "true" ]; then
+            echo "$ENHANCED_PROMPT" > plan-artifact/prompt.txt
+          else
+            echo "${{ steps.context.outputs.PROMPT }}" > plan-artifact/prompt.txt
+          fi
+          
+          echo "${{ steps.context.outputs.ROLE }}" > plan-artifact/role.txt
+          echo "${{ steps.context.outputs.RUNTIME }}" > plan-artifact/runtime.txt
+          
+          # Mark if this is a revision
+          echo "${{ steps.context.outputs.IS_REVISION }}" > plan-artifact/is-revision.txt
+          if [ "${{ steps.context.outputs.IS_REVISION }}" = "true" ]; then
+            echo "${{ steps.context.outputs.REVISION_FEEDBACK }}" > plan-artifact/revision-feedback.txt
+          fi
+          
+          rm -f "$OUTPUT_FILE" "$ERROR_FILE"
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-plan
+          path: plan-artifact/
+          retention-days: 7
+
+      - name: Post plan as comment
+        if: steps.context.outputs.ISSUE_NUMBER != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueNumber = '${{ steps.context.outputs.ISSUE_NUMBER }}';
+            const planOutput = `${{ steps.agent_plan.outputs.PLAN_OUTPUT }}`;
+            const planSection = `${{ steps.agent_plan.outputs.PLAN_SECTION }}`;
+            
+            const isRevision = '${{ steps.context.outputs.IS_REVISION }}' === 'true';
+            const revisionHeader = isRevision ? '## 🔄 AI Agent Plan (Revised)\n\n' : '## 🤖 AI Agent Plan\n\n';
+            const revisionNote = isRevision 
+              ? '> **Note:** This is a revised plan based on your feedback.\n\n' 
+              : '';
+            
+            const body = `${revisionHeader}${revisionNote}${planOutput}
+            
+            ---
+            
+            ### ⚠️ Review Required
+            
+            **Options:**
+            1. ✅ **Approve and proceed**: Click the "Review deployments" button below and approve, or comment: \`/proceed\`
+            2. 🔄 **Request changes**: Comment: \`/revise <your feedback here>\` to modify the plan
+            3. ❌ **Cancel**: Close this issue/PR
+            
+            **Example revision:**
+            \`/revise Please use a different approach for authentication. Consider using JWT tokens instead.\`
+            
+            <!-- Agent Plan Run ID: ${process.env.GITHUB_RUN_ID} -->`;
+            
             github.rest.issues.createComment({
-              issue_number: context.payload.issue.number,
+              issue_number: issueNumber,
               owner: context.repo.owner,
               repo: context.repo.repo,
               body: body
             });
-          } else if (context.payload.pull_request) {
-            github.rest.issues.createComment({
-              issue_number: context.payload.pull_request.number,
+
+      - name: Create check run with plan
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const planOutput = `${{ steps.agent_plan.outputs.PLAN_OUTPUT }}`;
+            const planError = `${{ steps.agent_plan.outputs.PLAN_ERROR }}`;
+            const exitCode = parseInt('${{ steps.agent_plan.outputs.EXIT_CODE }}');
+            
+            const conclusion = exitCode === 0 ? 'success' : 'failure';
+            const title = exitCode === 0 ? '✅ Plan Generated' : '❌ Plan Generation Failed';
+            
+            const output = {
+              title: title,
+              summary: exitCode === 0 
+                ? 'AI Agent has generated a plan. Review and approve to proceed with implementation.'
+                : 'AI Agent failed to generate a plan. Check the output for errors.',
+              text: planOutput + (planError ? '\n\n---\n\n**Errors:**\n' + planError : '')
+            };
+            
+            await github.rest.checks.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: body
+              name: 'AI Agent Plan',
+              head_sha: context.sha,
+              status: 'completed',
+              conclusion: conclusion,
+              output: output
             });
-          }
+
+  implement:
+    needs: plan
+    runs-on: ubuntu-latest
+    environment:
+      name: agent-implementation
+      # This creates the approval gate - configure required reviewers in GitHub Settings
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      checks: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Download plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: agent-plan
+          path: plan-artifact/
+
+      - name: Read plan context
+        id: plan_context
+        run: |
+          PROMPT=$(cat plan-artifact/prompt.txt)
+          ROLE=$(cat plan-artifact/role.txt)
+          RUNTIME=$(cat plan-artifact/runtime.txt)
+          
+          echo "PROMPT=$PROMPT" >> $GITHUB_OUTPUT
+          echo "ROLE=$ROLE" >> $GITHUB_OUTPUT
+          echo "RUNTIME=$RUNTIME" >> $GITHUB_OUTPUT
+
+      - name: Setup environment
+        run: |
+          chmod +x scripts/agent.sh
+          chmod +x scripts/runtimes/*.sh
+
+      - name: Run agent implementation phase
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AGENT_PROCEED: "true"
+        run: |
+          # Modify the prompt to include proceed instruction
+          PROCEED_PROMPT="${{ steps.plan_context.outputs.PROMPT }}"$'\n\n'"Proceed with the implementation."
+          
+          ./scripts/agent.sh \
+            --runtime "${{ steps.plan_context.outputs.RUNTIME }}" \
+            --role "${{ steps.plan_context.outputs.ROLE }}" \
+            "$PROCEED_PROMPT"
+
+      - name: Create implementation summary
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = `## ✅ Implementation Complete
+            
+            The AI Agent has completed the implementation based on the approved plan.
+            
+            **Next steps:**
+            - Review the changes in this PR
+            - Run tests locally if needed
+            - Merge when ready
+            
+            <!-- Implementation for Plan ID: ${process.env.GITHUB_RUN_ID} -->`;
+            
+            // Try to find the issue/PR number from context
+            if (context.payload.issue) {
+              github.rest.issues.createComment({
+                issue_number: context.payload.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: body
+              });
+            } else if (context.payload.pull_request) {
+              github.rest.issues.createComment({
+                issue_number: context.payload.pull_request.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: body
+              });
+            }
