@@ -98,8 +98,6 @@ jobs:
       - name: Install Gemini CLI
         run: npm install -g @google/gemini-cli
 
-
-
       - name: Setup environment
         run: |
           # Make scripts executable
@@ -126,7 +124,6 @@ jobs:
               const runIdMatch = comment.body.match(/Agent Plan Run ID: (\d+)/);
               if (runIdMatch && comment.body.includes('🤖 AI Agent Plan')) {
                 planRunId = runIdMatch[1];
-                // Try to extract original prompt from comment or find it in artifacts
                 break;
               }
             }
@@ -141,7 +138,6 @@ jobs:
             const { execSync } = require('child_process');
             
             try {
-              // Use the artifact download action's approach
               const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -171,10 +167,8 @@ jobs:
               core.warning(`Could not download original plan artifact: ${error.message}`);
             }
             
-            // Fallback: try to extract from comment or use a default
             if (!originalPrompt) {
-              // We'll construct it from the revision feedback
-              originalPrompt = 'Work on Jira ticket'; // Will be enhanced with revision feedback
+              originalPrompt = 'Work on Jira ticket'; 
             }
             
             core.setOutput('original_prompt', originalPrompt || '');
@@ -188,53 +182,47 @@ jobs:
             ORIGINAL_PROMPT="${{ steps.revision_context.outputs.original_prompt }}"
             REVISION_FEEDBACK="${{ steps.context.outputs.REVISION_FEEDBACK }}"
           
-            # If we couldn't get the original prompt, try to infer it
             if [ -z "$ORIGINAL_PROMPT" ] || [ "$ORIGINAL_PROMPT" = "Work on Jira ticket" ]; then
-              # Try to extract Jira ticket from issue/PR
               ORIGINAL_PROMPT="Work on Jira ticket"
             fi
           
-            # Create enhanced prompt with revision feedback
             ENHANCED_PROMPT="$ORIGINAL_PROMPT"$'\n\n'"REVISION REQUEST:"$'\n'"The previous plan needs to be revised based on the following feedback:"$'\n'"$REVISION_FEEDBACK"$'\n\n'"Please generate a revised plan that addresses this feedback while maintaining alignment with the original requirements."
           else
             ENHANCED_PROMPT="${{ steps.context.outputs.PROMPT }}"
           fi
           
-          # For Codex Action, we need to construct the full prompt including contract
+          # --- CORRECTION START: OPTIMIZED PROMPT FOR CODEX ---
           if [ "${{ steps.context.outputs.RUNTIME }}" = "codex" ]; then
              ROLE="${{ steps.context.outputs.ROLE }}"
              CONTRACT_FILE="agent-contracts/${ROLE}.md"
-             if [ -f "$CONTRACT_FILE" ]; then
-               CONTRACT_CONTENT=$(cat "$CONTRACT_FILE")
+             
+             # Instead of injecting content, we reference the file
+             FULL_PROMPT="You are the Oris Backend Engineer AI.
           
-               FULL_PROMPT="$CONTRACT_CONTENT
+          ### CRITICAL RULES:
+          1. Your architecture and behavior contract is located in the file: '${CONTRACT_FILE}'.
+          2. **YOU MUST READ THIS FILE** using your file system tools immediately. Do not proceed without reading it.
+          3. Strictly follow the patterns defined in that contract.
           
           ---
           
-          USER INSTRUCTION:
+          ### TASK:
           $ENHANCED_PROMPT
           
-          MCP INSTRUCTIONS (mandatory):
-          - If you need any domain/architecture references, use the Notion MCP tools.
-          - First run: notion-search with queries: 'Domain Definition', 'Oris', and the Jira key (e.g., 'OR-25').
-          - If multiple results, pick the best match by title + recency + workspace/project keywords.
-          - Then run: notion-fetch on the chosen page id.
-          - Summarize the retrieved Notion content under a section called 'Notion References' before planning.
-          - Do NOT ask me for a Notion link unless notion-search returns zero results.
+          ### MCP INSTRUCTIONS (Mandatory):
+          - Use Notion MCP tools if you need domain definitions.
+          - First run: notion-search with queries: 'Domain Definition', 'Oris', and the Jira key.
+          - If multiple results, pick the best match and run notion-fetch.
+          - Summarize Notion content under 'Notion References'.
           
           IMPORTANT: Stop after 'Proposed Plan'. Do not implement until I explicitly say: 'Proceed with implementation'.
           "
-               # Multiline string for GITHUB_OUTPUT
-               echo "FULL_CODEX_PROMPT<<EOF" >> $GITHUB_OUTPUT
-               echo "$FULL_PROMPT" >> $GITHUB_OUTPUT
-               echo "EOF" >> $GITHUB_OUTPUT
-             else
-               echo "Error: Contract file $CONTRACT_FILE not found"
-               exit 1
-             fi
+             echo "FULL_CODEX_PROMPT<<EOF" >> $GITHUB_OUTPUT
+             echo "$FULL_PROMPT" >> $GITHUB_OUTPUT
+             echo "EOF" >> $GITHUB_OUTPUT
           fi
+          # --- CORRECTION END ---
           
-          # Output for standard agent script
           echo "ENHANCED_PROMPT<<EOF" >> $GITHUB_OUTPUT
           echo "$ENHANCED_PROMPT" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
@@ -258,7 +246,6 @@ jobs:
           
           EXIT_CODE=$?
           
-          # Save outputs
           echo "PLAN_OUTPUT<<EOF" >> $GITHUB_OUTPUT
           cat "$OUTPUT_FILE" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
@@ -269,7 +256,6 @@ jobs:
           
           echo "EXIT_CODE=$EXIT_CODE" >> $GITHUB_OUTPUT
           
-          # Save temp files for artifact step
           mkdir -p plan-output-temp
           cp "$OUTPUT_FILE" plan-output-temp/output.txt
           cp "$ERROR_FILE" plan-output-temp/error.txt
@@ -291,25 +277,17 @@ jobs:
         run: |
           mkdir -p plan-artifact
           
-          # Initialize variables
           PLAN_OUTPUT=""
           PLAN_ERROR=""
           EXIT_CODE=0
           
           if [ "${{ steps.context.outputs.RUNTIME }}" = "codex" ]; then
-            # Logic for Codex Action Output
-            # Codex Action outputs 'final_message'
             PLAN_OUTPUT="${{ steps.agent_plan_codex.outputs.final_message }}"
-            # We assume success if the step didn't fail (action handles exit code)
-            # If the step failed, we might not get here unless we use if: always() on previous step. 
-            # But standard 'uses' steps fail the job on error.
-            # Let's assume for now if we are here and runtime is codex, and previous step 'success', it worked.
             if [ "${{ steps.agent_plan_codex.outcome }}" != "success" ]; then
                EXIT_CODE=1
                PLAN_ERROR="Codex Action failed. See step logs."
             fi
           else
-            # Logic for Script Output
             if [ -f plan-output-temp/output.txt ]; then
                PLAN_OUTPUT=$(cat plan-output-temp/output.txt)
             fi
@@ -319,12 +297,11 @@ jobs:
             if [ -f plan-output-temp/exit_code.txt ]; then
                EXIT_CODE=$(cat plan-output-temp/exit_code.txt)
             else
-               EXIT_CODE=1 # Should exist if script ran
+               EXIT_CODE=1
             fi
             rm -rf plan-output-temp
           fi
           
-          # Save outputs for workflow steps
           echo "PLAN_OUTPUT<<EOF" >> $GITHUB_OUTPUT
           echo "$PLAN_OUTPUT" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
@@ -335,8 +312,6 @@ jobs:
           
           echo "EXIT_CODE=$EXIT_CODE" >> $GITHUB_OUTPUT
           
-          # Extract plan section (everything after "### Proposed Plan")
-          # Save to temp file for awk if PLAN_OUTPUT is large/multiline
           echo "$PLAN_OUTPUT" > temp_plan_output.txt
           PLAN_SECTION=$(awk '/### Proposed Plan/,/### Architecture Verification|### Implementation|^---$|^$/{print}' temp_plan_output.txt | head -n -1)
           rm temp_plan_output.txt
@@ -345,23 +320,16 @@ jobs:
           echo "$PLAN_SECTION" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
           
-          # Save to artifact for next job
           echo "$PLAN_OUTPUT" > plan-artifact/plan-output.txt
           echo "$PLAN_ERROR" > plan-artifact/plan-error.txt
-          
-          # Save prompt info
           echo "${{ steps.prep_agent.outputs.ENHANCED_PROMPT }}" > plan-artifact/prompt.txt
-          
           echo "${{ steps.context.outputs.ROLE }}" > plan-artifact/role.txt
           echo "${{ steps.context.outputs.RUNTIME }}" > plan-artifact/runtime.txt
-          
-          # Mark if this is a revision (using inputs from context)
           echo "${{ steps.context.outputs.IS_REVISION }}" > plan-artifact/is-revision.txt
           if [ "${{ steps.context.outputs.IS_REVISION }}" = "true" ]; then
             echo "${{ steps.context.outputs.REVISION_FEEDBACK }}" > plan-artifact/revision-feedback.txt
           fi
           
-          # Check for errors and fail if any (Same logic as before)
           if [ $EXIT_CODE -ne 0 ]; then
             echo "❌ Agent planning phase failed with exit code: $EXIT_CODE"
             if [ -s plan-artifact/plan-error.txt ]; then
@@ -389,7 +357,6 @@ jobs:
           cat plan-artifact/plan-output.txt >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           
-          # Also output to console for immediate visibility
           echo "=== AI Agent Plan Output ==="
           cat plan-artifact/plan-output.txt
 
@@ -405,7 +372,6 @@ jobs:
           echo "=== Errors ==="
           cat plan-artifact/plan-error.txt
           
-          # Fail if we reach here and there are errors (shouldn't happen due to previous step, but safety check)
           if [ "${{ steps.agent_plan.outputs.EXIT_CODE }}" != "0" ]; then
             echo "❌ Plan generation failed. See errors above."
             exit 1
@@ -447,7 +413,7 @@ jobs:
             **Example revision:**
             \`/revise Please use a different approach for authentication. Consider using JWT tokens instead.\`
             
-            <!-- Agent Plan Run ID: ${process.env.GITHUB_RUN_ID} -->`;
+            `;
             
             github.rest.issues.createComment({
               issue_number: issueNumber,
@@ -467,11 +433,10 @@ jobs:
             const conclusion = exitCode === 0 ? 'success' : 'failure';
             const title = exitCode === 0 ? '✅ Plan Generated' : '❌ Plan Generation Failed';
             
-            // Truncate very long outputs for check run (GitHub has limits)
-            const maxLength = 65000; // GitHub check run output limit
+            const maxLength = 65000;
             let displayOutput = planOutput;
             if (displayOutput.length > maxLength) {
-              displayOutput = planOutput.substring(0, maxLength - 100) + '\n\n... (output truncated, see workflow summary or comments for full output)';
+              displayOutput = planOutput.substring(0, maxLength - 100) + '\n\n... (output truncated)';
             }
             
             const output = {
@@ -497,7 +462,6 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: agent-implementation
-      # This creates the approval gate - configure required reviewers in GitHub Settings
     permissions:
       contents: write
       issues: write
@@ -536,18 +500,14 @@ jobs:
       - name: Install Gemini CLI
         run: npm install -g @google/gemini-cli
 
-
-
       - name: Configure MCP Servers
         run: |
           mkdir -p ~/.gemini
           
-          # Use Node.js to generate proper JSON
           node << 'EOF'
           const fs = require('fs');
           const mcpServers = {};
           
-          // Add Notion MCP (required for contract)
           if (process.env.NOTION_API_KEY) {
             mcpServers.notion = {
               command: "npx",
@@ -558,7 +518,6 @@ jobs:
             };
           }
           
-          // Add Atlassian Rovo MCP (optional)
           if (process.env.ATLASSIAN_MCP_URL) {
             mcpServers["atlassian-rovo-mcp-server"] = {
               url: process.env.ATLASSIAN_MCP_URL,
@@ -578,9 +537,6 @@ jobs:
             process.env.HOME + '/.gemini/settings.json',
             JSON.stringify(config, null, 2)
           );
-          
-          console.log('MCP servers configured:');
-          console.log(JSON.stringify(config, null, 2));
           EOF
         env:
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
@@ -600,43 +556,37 @@ jobs:
           ROLE=$(cat plan-artifact/role.txt)
           RUNTIME=$(cat plan-artifact/runtime.txt)
           
-          # Check for PROCEED mode
           echo "PROCEED_PROMPT<<EOF" >> $GITHUB_OUTPUT
           echo "$PROMPT"$'\n\n'"Proceed with the implementation." >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
           
+          # --- CORRECTION START: OPTIMIZED PROMPT FOR CODEX (IMPLEMENTATION) ---
           if [ "$RUNTIME" = "codex" ]; then
              CONTRACT_FILE="agent-contracts/${ROLE}.md"
-             if [ -f "$CONTRACT_FILE" ]; then
-               CONTRACT_CONTENT=$(cat "$CONTRACT_FILE")
+             
+             # Reference the file again for the implementation phase
+             FULL_PROMPT="You are the Oris Backend Engineer AI.
           
-               FULL_PROMPT="$CONTRACT_CONTENT
+          ### CRITICAL RULES:
+          1. **READ THE CONTRACT**: 'agent-contracts/${ROLE}.md' using your tools.
+          2. Follow the plan proposed in the previous phase.
           
           ---
           
-          USER INSTRUCTION:
+          ### TASK:
           $PROMPT
           
-          MCP INSTRUCTIONS (mandatory):
-          - If you need any domain/architecture references, use the Notion MCP tools.
-          - First run: notion-search with queries: 'Domain Definition', 'Oris', and the Jira key (e.g., 'OR-25').
-          - If multiple results, pick the best match by title + recency + workspace/project keywords.
-          - Then run: notion-fetch on the chosen page id.
-          - Summarize the retrieved Notion content under a section called 'Notion References' before planning.
-          - Do NOT ask me for a Notion link unless notion-search returns zero results.
+          ### MCP INSTRUCTIONS:
+          - Use Notion MCP to check for updates or clarifications if needed.
           
-          IMPORTANT: Stop after 'Proposed Plan'. Do not implement until I explicitly say: 'Proceed with implementation'.
-          
-          ---
-          
-          USER INSTRUCTION:
+          ### INSTRUCTION:
           Proceed with the implementation.
           "
-               echo "FULL_CODEX_PROMPT<<EOF" >> $GITHUB_OUTPUT
-               echo "$FULL_PROMPT" >> $GITHUB_OUTPUT
-               echo "EOF" >> $GITHUB_OUTPUT
-             fi
+             echo "FULL_CODEX_PROMPT<<EOF" >> $GITHUB_OUTPUT
+             echo "$FULL_PROMPT" >> $GITHUB_OUTPUT
+             echo "EOF" >> $GITHUB_OUTPUT
           fi
+          # --- CORRECTION END ---
 
       - name: Run agent implementation phase (Script)
         if: steps.plan_context.outputs.RUNTIME != 'codex'
@@ -751,9 +701,8 @@ jobs:
             - Run tests locally if needed
             - Merge when ready
             
-            <!-- Implementation for Plan ID: ${process.env.GITHUB_RUN_ID} -->`;
+            `;
             
-            // Try to find the issue/PR number from context
             if (context.payload.issue) {
               github.rest.issues.createComment({
                 issue_number: context.payload.issue.number,
