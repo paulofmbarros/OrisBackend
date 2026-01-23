@@ -5,6 +5,12 @@ CONTRACT_FILE="$1"
 shift
 USER_PROMPT="$*"
 
+# Check if the codex binary is actually reachable
+if ! command -v codex &> /dev/null; then
+    echo "Error: 'codex' command not found in PATH." >&2
+    exit 1
+fi
+
 FULL_PROMPT="$(cat "$CONTRACT_FILE")
 
 ---
@@ -13,14 +19,23 @@ USER INSTRUCTION:
 $USER_PROMPT
 
 MCP INSTRUCTIONS (mandatory):
-- If you need any domain/architecture references, use the Notion MCP tools.
-- First run: notion-search with queries: 'Domain Definition', 'Oris', and the Jira key (e.g., 'OR-25').
-- If multiple results, pick the best match by title + recency + workspace/project keywords.
-- Then run: notion-fetch on the chosen page id.
-- Summarize the retrieved Notion content under a section called 'Notion References' before planning.
-- Do NOT ask me for a Notion link unless notion-search returns zero results.
-
-IMPORTANT: Stop after 'Proposed Plan'. Do not implement until I explicitly say: 'Proceed with implementation'.
+... (your MCP instructions) ...
 "
 
-codex "$FULL_PROMPT"
+# GitHub Actions runners are faster than local terminals. 
+# We add a retry loop for "Quota Exceeded" which often just means "Slow down".
+MAX_RETRIES=2
+COUNT=0
+
+while [ $COUNT -le $MAX_RETRIES ]; do
+  # Run codex and capture output
+  if codex "$FULL_PROMPT"; then
+    exit 0
+  else
+    echo "Codex failed. Attempting retry $((COUNT+1)) in 15s..." >&2
+    sleep 15
+    COUNT=$((COUNT+1))
+  fi
+done
+
+exit 1
