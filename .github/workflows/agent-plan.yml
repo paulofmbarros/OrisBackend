@@ -22,7 +22,7 @@ on:
         options:
           - gemini
           - claude
-          - codex # Mapeado internamente para OpenAI
+          - codex
   issue_comment:
     types: [created]
   pull_request:
@@ -96,8 +96,7 @@ jobs:
       - name: Install AI CLI Tools
         run: | 
           npm install -g @google/gemini-cli
-          # Instalação de ferramentas adicionais se necessário para OpenAI/Claude
-          # npm install -g ...
+          # npm install -g @openai/codex # (Opcional, dependendo do que o teu codex.sh usa internamente)
 
       - name: Setup environment
         run: |
@@ -131,17 +130,13 @@ jobs:
               return;
             }
             
-            // Logic to fetch prompt from artifact omitted for brevity but recommended
-            // Fallback:
             originalPrompt = 'Work on Jira ticket';
-            
             core.setOutput('original_prompt', originalPrompt);
             core.setOutput('plan_run_id', planRunId);
 
       - name: Prepare Agent Prompt
         id: prep_agent
         run: |
-          # 1. Determine Base Prompt
           if [ "${{ steps.context.outputs.IS_REVISION }}" = "true" ]; then
             BASE_PROMPT="${{ steps.revision_context.outputs.original_prompt }}"
             REVISION_FEEDBACK="${{ steps.context.outputs.REVISION_FEEDBACK }}"
@@ -153,8 +148,7 @@ jobs:
           ROLE="${{ steps.context.outputs.ROLE }}"
           CONTRACT_FILE="agent-contracts/${ROLE}.md"
           
-          # 2. Build Optimized Prompt (Reference Strategy)
-          # We do NOT cat the file. We tell the agent to read it.
+          # Prompt Otimizado
           FULL_PROMPT="You are the Oris Backend Engineer AI.
           
           ### CRITICAL RESOURCES:
@@ -187,12 +181,8 @@ jobs:
           OUTPUT_FILE=$(mktemp)
           ERROR_FILE=$(mktemp)
           
-          # Map 'codex' to 'openai' for the script
+          # Passamos o runtime exatamente como veio do input (codex, gemini, etc)
           RUNTIME="${{ steps.context.outputs.RUNTIME }}"
-          if [ "$RUNTIME" = "codex" ]; then
-            echo "Mapping runtime 'codex' to 'openai'..."
-            RUNTIME="openai"
-          fi
           
           echo "Running agent with Runtime: $RUNTIME"
           
@@ -204,7 +194,6 @@ jobs:
           
           EXIT_CODE=$?
           
-          # Capture Outputs
           echo "PLAN_OUTPUT<<EOF" >> $GITHUB_OUTPUT
           cat "$OUTPUT_FILE" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
@@ -215,13 +204,11 @@ jobs:
           
           echo "EXIT_CODE=$EXIT_CODE" >> $GITHUB_OUTPUT
           
-          # Cleanup for Artifacts
           mkdir -p plan-output-temp
           cp "$OUTPUT_FILE" plan-output-temp/output.txt
           cp "$ERROR_FILE" plan-output-temp/error.txt
           echo "$EXIT_CODE" > plan-output-temp/exit_code.txt
           
-          # Extract Plan Section (Helper for comment)
           echo "$PLAN_OUTPUT" > temp_plan.txt
           PLAN_SECTION=$(awk '/### Proposed Plan/,/### Architecture Verification|### Implementation|^---$|^$/{print}' temp_plan.txt | head -n -1)
           rm temp_plan.txt
@@ -350,7 +337,6 @@ jobs:
           ROLE="${{ steps.plan_context.outputs.ROLE }}"
           CONTRACT_FILE="agent-contracts/${ROLE}.md"
           
-          # Optimized Implementation Prompt
           IMPL_PROMPT="You are the Oris Backend Engineer AI.
           
           ### CRITICAL:
@@ -380,7 +366,6 @@ jobs:
           ERROR_FILE=$(mktemp)
           
           RUNTIME="${{ steps.plan_context.outputs.RUNTIME }}"
-          if [ "$RUNTIME" = "codex" ]; then RUNTIME="openai"; fi
           
           ./scripts/agent.sh \
             --runtime "$RUNTIME" \
