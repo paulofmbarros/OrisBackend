@@ -98,8 +98,7 @@ jobs:
       - name: Install Gemini CLI
         run: npm install -g @google/gemini-cli
 
-      - name: Install Codex CLI
-        run: npm install -g @openai/codex
+
 
       - name: Setup environment
         run: |
@@ -181,18 +180,9 @@ jobs:
             core.setOutput('original_prompt', originalPrompt || '');
             core.setOutput('plan_run_id', planRunId);
 
-      - name: Run agent planning phase
-        id: agent_plan
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      - name: Prepare Agent Prompt
+        id: prep_agent
         run: |
-          set +e  # Don't fail on non-zero exit, we want to capture output
-          
-          OUTPUT_FILE=$(mktemp)
-          ERROR_FILE=$(mktemp)
-          
           # Build the prompt - either original or with revision feedback
           if [ "${{ steps.context.outputs.IS_REVISION }}" = "true" ]; then
             ORIGINAL_PROMPT="${{ steps.revision_context.outputs.original_prompt }}"
@@ -210,13 +200,62 @@ jobs:
             ENHANCED_PROMPT="${{ steps.context.outputs.PROMPT }}"
           fi
           
-          # Run agent and capture output
+          # For Codex Action, we need to construct the full prompt including contract
+          if [ "${{ steps.context.outputs.RUNTIME }}" = "codex" ]; then
+             ROLE="${{ steps.context.outputs.ROLE }}"
+             CONTRACT_FILE="agent-contracts/${ROLE}.md"
+             if [ -f "$CONTRACT_FILE" ]; then
+               CONTRACT_CONTENT=$(cat "$CONTRACT_FILE")
+               
+               FULL_PROMPT="$CONTRACT_CONTENT
+          
+          ---
+          
+          USER INSTRUCTION:
+          $ENHANCED_PROMPT
+          
+          MCP INSTRUCTIONS (mandatory):
+          - If you need any domain/architecture references, use the Notion MCP tools.
+          - First run: notion-search with queries: 'Domain Definition', 'Oris', and the Jira key (e.g., 'OR-25').
+          - If multiple results, pick the best match by title + recency + workspace/project keywords.
+          - Then run: notion-fetch on the chosen page id.
+          - Summarize the retrieved Notion content under a section called 'Notion References' before planning.
+          - Do NOT ask me for a Notion link unless notion-search returns zero results.
+          
+          IMPORTANT: Stop after 'Proposed Plan'. Do not implement until I explicitly say: 'Proceed with implementation'.
+          "
+               # Multiline string for GITHUB_OUTPUT
+               echo "FULL_CODEX_PROMPT<<EOF" >> $GITHUB_OUTPUT
+               echo "$FULL_PROMPT" >> $GITHUB_OUTPUT
+               echo "EOF" >> $GITHUB_OUTPUT
+             else
+               echo "Error: Contract file $CONTRACT_FILE not found"
+               exit 1
+             fi
+          fi
+          
+          # Output for standard agent script
+          echo "ENHANCED_PROMPT<<EOF" >> $GITHUB_OUTPUT
+          echo "$ENHANCED_PROMPT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Run agent planning phase (Script)
+        if: steps.context.outputs.RUNTIME != 'codex'
+        id: agent_plan_script
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set +e
+          OUTPUT_FILE=$(mktemp)
+          ERROR_FILE=$(mktemp)
+          
           ./scripts/agent.sh \
             --runtime "${{ steps.context.outputs.RUNTIME }}" \
             --role "${{ steps.context.outputs.ROLE }}" \
-            "$ENHANCED_PROMPT" \
+            "${{ steps.prep_agent.outputs.ENHANCED_PROMPT }}" \
             > "$OUTPUT_FILE" 2> "$ERROR_FILE"
-          
+            
           EXIT_CODE=$?
           
           # Save outputs
@@ -230,39 +269,99 @@ jobs:
           
           echo "EXIT_CODE=$EXIT_CODE" >> $GITHUB_OUTPUT
           
+          # Save temp files for artifact step
+          mkdir -p plan-output-temp
+          cp "$OUTPUT_FILE" plan-output-temp/output.txt
+          cp "$ERROR_FILE" plan-output-temp/error.txt
+          echo "$EXIT_CODE" > plan-output-temp/exit_code.txt
+          
+          rm -f "$OUTPUT_FILE" "$ERROR_FILE"
+
+      - name: Run Codex Action
+        if: steps.context.outputs.RUNTIME == 'codex'
+        id: agent_plan_codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt: ${{ steps.prep_agent.outputs.FULL_CODEX_PROMPT }}
+          
+      - name: Process Agent Output
+        id: agent_plan
+        if: always()
+        run: |
+          mkdir -p plan-artifact
+          
+          # Initialize variables
+          PLAN_OUTPUT=""
+          PLAN_ERROR=""
+          EXIT_CODE=0
+          
+          if [ "${{ steps.context.outputs.RUNTIME }}" = "codex" ]; then
+            # Logic for Codex Action Output
+            # Codex Action outputs 'final_message'
+            PLAN_OUTPUT="${{ steps.agent_plan_codex.outputs.final_message }}"
+            # We assume success if the step didn't fail (action handles exit code)
+            # If the step failed, we might not get here unless we use if: always() on previous step. 
+            # But standard 'uses' steps fail the job on error.
+            # Let's assume for now if we are here and runtime is codex, and previous step 'success', it worked.
+            if [ "${{ steps.agent_plan_codex.outcome }}" != "success" ]; then
+               EXIT_CODE=1
+               PLAN_ERROR="Codex Action failed. See step logs."
+            fi
+          else
+            # Logic for Script Output
+            if [ -f plan-output-temp/output.txt ]; then
+               PLAN_OUTPUT=$(cat plan-output-temp/output.txt)
+            fi
+            if [ -f plan-output-temp/error.txt ]; then
+               PLAN_ERROR=$(cat plan-output-temp/error.txt)
+            fi
+            if [ -f plan-output-temp/exit_code.txt ]; then
+               EXIT_CODE=$(cat plan-output-temp/exit_code.txt)
+            else
+               EXIT_CODE=1 # Should exist if script ran
+            fi
+            rm -rf plan-output-temp
+          fi
+          
+          # Save outputs for workflow steps
+          echo "PLAN_OUTPUT<<EOF" >> $GITHUB_OUTPUT
+          echo "$PLAN_OUTPUT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          echo "PLAN_ERROR<<EOF" >> $GITHUB_OUTPUT
+          echo "$PLAN_ERROR" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          echo "EXIT_CODE=$EXIT_CODE" >> $GITHUB_OUTPUT
+          
           # Extract plan section (everything after "### Proposed Plan")
-          PLAN_SECTION=$(awk '/### Proposed Plan/,/### Architecture Verification|### Implementation|^---$|^$/{print}' "$OUTPUT_FILE" | head -n -1)
+          # Save to temp file for awk if PLAN_OUTPUT is large/multiline
+          echo "$PLAN_OUTPUT" > temp_plan_output.txt
+          PLAN_SECTION=$(awk '/### Proposed Plan/,/### Architecture Verification|### Implementation|^---$|^$/{print}' temp_plan_output.txt | head -n -1)
+          rm temp_plan_output.txt
+          
           echo "PLAN_SECTION<<EOF" >> $GITHUB_OUTPUT
           echo "$PLAN_SECTION" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
           
           # Save to artifact for next job
-          mkdir -p plan-artifact
-          cp "$OUTPUT_FILE" plan-artifact/plan-output.txt
-          cp "$ERROR_FILE" plan-artifact/plan-error.txt
+          echo "$PLAN_OUTPUT" > plan-artifact/plan-output.txt
+          echo "$PLAN_ERROR" > plan-artifact/plan-error.txt
           
-          # Save the enhanced prompt (original or with revision)
-          if [ "${{ steps.context.outputs.IS_REVISION }}" = "true" ]; then
-            echo "$ENHANCED_PROMPT" > plan-artifact/prompt.txt
-          else
-            echo "${{ steps.context.outputs.PROMPT }}" > plan-artifact/prompt.txt
-          fi
+          # Save prompt info
+          echo "${{ steps.prep_agent.outputs.ENHANCED_PROMPT }}" > plan-artifact/prompt.txt
           
           echo "${{ steps.context.outputs.ROLE }}" > plan-artifact/role.txt
           echo "${{ steps.context.outputs.RUNTIME }}" > plan-artifact/runtime.txt
           
-          # Mark if this is a revision
+          # Mark if this is a revision (using inputs from context)
           echo "${{ steps.context.outputs.IS_REVISION }}" > plan-artifact/is-revision.txt
           if [ "${{ steps.context.outputs.IS_REVISION }}" = "true" ]; then
             echo "${{ steps.context.outputs.REVISION_FEEDBACK }}" > plan-artifact/revision-feedback.txt
           fi
           
-          rm -f "$OUTPUT_FILE" "$ERROR_FILE"
-          
-          # Re-enable exit on error and fail if there were errors
-          set -e
-          
-          # Check for errors and fail if any
+          # Check for errors and fail if any (Same logic as before)
           if [ $EXIT_CODE -ne 0 ]; then
             echo "❌ Agent planning phase failed with exit code: $EXIT_CODE"
             if [ -s plan-artifact/plan-error.txt ]; then
@@ -272,10 +371,8 @@ jobs:
             exit $EXIT_CODE
           fi
           
-          # Also check if error file has content (even if exit code was 0)
           if [ -s plan-artifact/plan-error.txt ]; then
             ERROR_CONTENT=$(cat plan-artifact/plan-error.txt)
-            # Check for common error patterns
             if echo "$ERROR_CONTENT" | grep -qiE "(error|failed|exception|command not found|permission denied|not found)"; then
               echo "❌ Errors detected in plan generation:"
               echo "$ERROR_CONTENT"
@@ -439,8 +536,7 @@ jobs:
       - name: Install Gemini CLI
         run: npm install -g @google/gemini-cli
 
-      - name: Install Codex CLI
-        run: npm install -g @openai/codex
+
 
       - name: Configure MCP Servers
         run: |
@@ -497,49 +593,124 @@ jobs:
           chmod +x scripts/agent.sh
           chmod +x scripts/runtimes/*.sh
 
-      - name: Run agent implementation phase
-        id: agent_implement
+      - name: Prepare Implementation Prompt
+        id: prep_impl
+        run: |
+          PROMPT=$(cat plan-artifact/prompt.txt)
+          ROLE=$(cat plan-artifact/role.txt)
+          RUNTIME=$(cat plan-artifact/runtime.txt)
+          
+          # Check for PROCEED mode
+          echo "PROCEED_PROMPT<<EOF" >> $GITHUB_OUTPUT
+          echo "$PROMPT"$'\n\n'"Proceed with the implementation." >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          if [ "$RUNTIME" = "codex" ]; then
+             CONTRACT_FILE="agent-contracts/${ROLE}.md"
+             if [ -f "$CONTRACT_FILE" ]; then
+               CONTRACT_CONTENT=$(cat "$CONTRACT_FILE")
+               
+               FULL_PROMPT="$CONTRACT_CONTENT
+          
+          ---
+          
+          USER INSTRUCTION:
+          $PROMPT
+          
+          MCP INSTRUCTIONS (mandatory):
+          - If you need any domain/architecture references, use the Notion MCP tools.
+          - First run: notion-search with queries: 'Domain Definition', 'Oris', and the Jira key (e.g., 'OR-25').
+          - If multiple results, pick the best match by title + recency + workspace/project keywords.
+          - Then run: notion-fetch on the chosen page id.
+          - Summarize the retrieved Notion content under a section called 'Notion References' before planning.
+          - Do NOT ask me for a Notion link unless notion-search returns zero results.
+          
+          IMPORTANT: Stop after 'Proposed Plan'. Do not implement until I explicitly say: 'Proceed with implementation'.
+          
+          ---
+          
+          USER INSTRUCTION:
+          Proceed with the implementation.
+          "
+               echo "FULL_CODEX_PROMPT<<EOF" >> $GITHUB_OUTPUT
+               echo "$FULL_PROMPT" >> $GITHUB_OUTPUT
+               echo "EOF" >> $GITHUB_OUTPUT
+             fi
+          fi
+
+      - name: Run agent implementation phase (Script)
+        if: steps.plan_context.outputs.RUNTIME != 'codex'
+        id: agent_implement_script
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           AGENT_PROCEED: "true"
         run: |
-          set +e  # Don't fail immediately, capture output
-          
+          set +e
           OUTPUT_FILE=$(mktemp)
           ERROR_FILE=$(mktemp)
-          
-          # Modify the prompt to include proceed instruction
-          PROCEED_PROMPT="${{ steps.plan_context.outputs.PROMPT }}"$'\n\n'"Proceed with the implementation."
           
           ./scripts/agent.sh \
             --runtime "${{ steps.plan_context.outputs.RUNTIME }}" \
             --role "${{ steps.plan_context.outputs.ROLE }}" \
-            "$PROCEED_PROMPT" \
+            "${{ steps.prep_impl.outputs.PROCEED_PROMPT }}" \
             > "$OUTPUT_FILE" 2> "$ERROR_FILE"
-          
+            
           EXIT_CODE=$?
           
-          # Save outputs for display
+          mkdir -p impl-output-temp
+          cp "$OUTPUT_FILE" impl-output-temp/output.txt
+          cp "$ERROR_FILE" impl-output-temp/error.txt
+          echo "$EXIT_CODE" > impl-output-temp/exit_code.txt
+          
+          rm -f "$OUTPUT_FILE" "$ERROR_FILE"
+          
+      - name: Run Codex Action (Implementation)
+        if: steps.plan_context.outputs.RUNTIME == 'codex'
+        id: agent_implement_codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt: ${{ steps.prep_impl.outputs.FULL_CODEX_PROMPT }}
+          
+      - name: Process Implementation Output
+        if: always()
+        run: |
+          mkdir -p implementation-artifact
+          
+          OUTPUT=""
+          ERROR=""
+          EXIT_CODE=0
+          
+          if [ "${{ steps.plan_context.outputs.RUNTIME }}" = "codex" ]; then
+             OUTPUT="${{ steps.agent_implement_codex.outputs.final_message }}"
+             if [ "${{ steps.agent_implement_codex.outcome }}" != "success" ]; then
+                EXIT_CODE=1
+                ERROR="Codex Action failed."
+             fi
+          else
+             if [ -f impl-output-temp/output.txt ]; then OUTPUT=$(cat impl-output-temp/output.txt); fi
+             if [ -f impl-output-temp/error.txt ]; then ERROR=$(cat impl-output-temp/error.txt); fi
+             if [ -f impl-output-temp/exit_code.txt ]; then EXIT_CODE=$(cat impl-output-temp/exit_code.txt); else EXIT_CODE=1; fi
+             rm -rf impl-output-temp
+          fi
+          
           echo "IMPLEMENTATION_OUTPUT<<EOF" >> $GITHUB_OUTPUT
-          cat "$OUTPUT_FILE" >> $GITHUB_OUTPUT
+          echo "$OUTPUT" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
           
           echo "IMPLEMENTATION_ERROR<<EOF" >> $GITHUB_OUTPUT
-          cat "$ERROR_FILE" >> $GITHUB_OUTPUT
+          echo "$ERROR" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
           
           echo "EXIT_CODE=$EXIT_CODE" >> $GITHUB_OUTPUT
           
-          # Save to files for summary
-          mkdir -p implementation-artifact
-          cp "$OUTPUT_FILE" implementation-artifact/output.txt
-          cp "$ERROR_FILE" implementation-artifact/error.txt
+          echo "$OUTPUT" > implementation-artifact/output.txt
+          echo "$ERROR" > implementation-artifact/error.txt
           
-          rm -f "$OUTPUT_FILE" "$ERROR_FILE"
-          
-          exit $EXIT_CODE
+          if [ $EXIT_CODE -ne 0 ]; then
+             exit $EXIT_CODE
+          fi
 
       - name: Display implementation output
         if: always()
