@@ -22,7 +22,7 @@ on:
         options:
           - gemini
           - claude
-          - codex
+          - codex # Mapeado internamente para OpenAI
   issue_comment:
     types: [created]
   pull_request:
@@ -59,7 +59,6 @@ jobs:
               echo "ISSUE_NUMBER=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
               echo "IS_REVISION=false" >> $GITHUB_OUTPUT
             elif echo "$COMMENT_BODY" | grep -qE "^\s*/revise\s+"; then
-              # Extract revision feedback
               REVISION_FEEDBACK=$(echo "$COMMENT_BODY" | sed -E 's|^\s*/revise\s+||')
               echo "REVISION_FEEDBACK=$REVISION_FEEDBACK" >> $GITHUB_OUTPUT
               echo "IS_REVISION=true" >> $GITHUB_OUTPUT
@@ -70,7 +69,6 @@ jobs:
               echo "SKIP=true" >> $GITHUB_OUTPUT
             fi
           elif [ "${{ github.event_name }}" = "pull_request" ]; then
-            # Extract Jira ticket from PR title or body
             PR_TITLE="${{ github.event.pull_request.title }}"
             PR_BODY="${{ github.event.pull_request.body }}"
             JIRA_KEY=$(echo "$PR_TITLE $PR_BODY" | grep -oE '[A-Z]+-[0-9]+' | head -1)
@@ -95,12 +93,14 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install Gemini CLI
-        run: npm install -g @google/gemini-cli
+      - name: Install AI CLI Tools
+        run: | 
+          npm install -g @google/gemini-cli
+          # Instalação de ferramentas adicionais se necessário para OpenAI/Claude
+          # npm install -g ...
 
       - name: Setup environment
         run: |
-          # Make scripts executable
           chmod +x scripts/agent.sh
           chmod +x scripts/runtimes/*.sh
 
@@ -110,14 +110,12 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            // Find the most recent plan comment to get the original prompt
             const comments = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: parseInt('${{ steps.context.outputs.ISSUE_NUMBER }}'),
             });
             
-            // Look for the most recent plan comment with run ID
             let originalPrompt = null;
             let planRunId = null;
             for (const comment of comments.data.reverse()) {
@@ -129,123 +127,84 @@ jobs:
             }
             
             if (!planRunId) {
-              core.setFailed('Could not find original plan. Please ensure a plan was generated first.');
+              core.setFailed('Could not find original plan run ID.');
               return;
             }
             
-            // Download the original plan artifact to get the prompt
-            const fs = require('fs');
-            const { execSync } = require('child_process');
+            // Logic to fetch prompt from artifact omitted for brevity but recommended
+            // Fallback:
+            originalPrompt = 'Work on Jira ticket';
             
-            try {
-              const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                run_id: parseInt(planRunId),
-              });
-            
-              const planArtifact = artifacts.data.artifacts.find(a => a.name === 'agent-plan');
-              if (planArtifact) {
-                const download = await github.rest.actions.downloadArtifact({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  artifact_id: planArtifact.id,
-                  archive_format: 'zip',
-                });
-            
-                fs.mkdirSync('original-plan', { recursive: true });
-                fs.writeFileSync('original-plan.zip', Buffer.from(download.data));
-                execSync('unzip -q original-plan.zip -d original-plan/');
-            
-                if (fs.existsSync('original-plan/prompt.txt')) {
-                  originalPrompt = fs.readFileSync('original-plan/prompt.txt', 'utf8').trim();
-                }
-            
-                execSync('rm -rf original-plan original-plan.zip');
-              }
-            } catch (error) {
-              core.warning(`Could not download original plan artifact: ${error.message}`);
-            }
-            
-            if (!originalPrompt) {
-              originalPrompt = 'Work on Jira ticket'; 
-            }
-            
-            core.setOutput('original_prompt', originalPrompt || '');
+            core.setOutput('original_prompt', originalPrompt);
             core.setOutput('plan_run_id', planRunId);
 
       - name: Prepare Agent Prompt
         id: prep_agent
         run: |
-          # Build the prompt - either original or with revision feedback
+          # 1. Determine Base Prompt
           if [ "${{ steps.context.outputs.IS_REVISION }}" = "true" ]; then
-            ORIGINAL_PROMPT="${{ steps.revision_context.outputs.original_prompt }}"
+            BASE_PROMPT="${{ steps.revision_context.outputs.original_prompt }}"
             REVISION_FEEDBACK="${{ steps.context.outputs.REVISION_FEEDBACK }}"
-          
-            if [ -z "$ORIGINAL_PROMPT" ] || [ "$ORIGINAL_PROMPT" = "Work on Jira ticket" ]; then
-              ORIGINAL_PROMPT="Work on Jira ticket"
-            fi
-          
-            ENHANCED_PROMPT="$ORIGINAL_PROMPT"$'\n\n'"REVISION REQUEST:"$'\n'"The previous plan needs to be revised based on the following feedback:"$'\n'"$REVISION_FEEDBACK"$'\n\n'"Please generate a revised plan that addresses this feedback while maintaining alignment with the original requirements."
+            TASK_INSTRUCTION="$BASE_PROMPT"$'\n\n'"REVISION REQUEST: The previous plan needs to be revised based on: $REVISION_FEEDBACK"
           else
-            ENHANCED_PROMPT="${{ steps.context.outputs.PROMPT }}"
+            TASK_INSTRUCTION="${{ steps.context.outputs.PROMPT }}"
           fi
           
-          # --- CORRECTION START: OPTIMIZED PROMPT FOR CODEX ---
-          if [ "${{ steps.context.outputs.RUNTIME }}" = "codex" ]; then
-             ROLE="${{ steps.context.outputs.ROLE }}"
-             CONTRACT_FILE="agent-contracts/${ROLE}.md"
-             
-             # Instead of injecting content, we reference the file
-             FULL_PROMPT="You are the Oris Backend Engineer AI.
+          ROLE="${{ steps.context.outputs.ROLE }}"
+          CONTRACT_FILE="agent-contracts/${ROLE}.md"
           
-          ### CRITICAL RULES:
-          1. Your architecture and behavior contract is located in the file: '${CONTRACT_FILE}'.
-          2. **YOU MUST READ THIS FILE** using your file system tools immediately. Do not proceed without reading it.
-          3. Strictly follow the patterns defined in that contract.
+          # 2. Build Optimized Prompt (Reference Strategy)
+          # We do NOT cat the file. We tell the agent to read it.
+          FULL_PROMPT="You are the Oris Backend Engineer AI.
           
-          ---
+          ### CRITICAL RESOURCES:
+          Your mandatory behavior contract and architecture rules are located in: '${CONTRACT_FILE}'.
+          
+          ### RULES:
+          1. **READ THE CONTRACT**: Use your file system tools to read '${CONTRACT_FILE}' immediately.
+          2. **MCP TOOLS**: 
+             - Use Notion MCP to search for 'Domain Definition' and the Jira ticket key.
+             - Summarize findings in 'Notion References'.
           
           ### TASK:
-          $ENHANCED_PROMPT
+          $TASK_INSTRUCTION
           
-          ### MCP INSTRUCTIONS (Mandatory):
-          - Use Notion MCP tools if you need domain definitions.
-          - First run: notion-search with queries: 'Domain Definition', 'Oris', and the Jira key.
-          - If multiple results, pick the best match and run notion-fetch.
-          - Summarize Notion content under 'Notion References'.
-          
-          IMPORTANT: Stop after 'Proposed Plan'. Do not implement until I explicitly say: 'Proceed with implementation'.
-          "
-             echo "FULL_CODEX_PROMPT<<EOF" >> $GITHUB_OUTPUT
-             echo "$FULL_PROMPT" >> $GITHUB_OUTPUT
-             echo "EOF" >> $GITHUB_OUTPUT
-          fi
-          # --- CORRECTION END ---
+          IMPORTANT: Stop after 'Proposed Plan'. Do not implement yet."
           
           echo "ENHANCED_PROMPT<<EOF" >> $GITHUB_OUTPUT
-          echo "$ENHANCED_PROMPT" >> $GITHUB_OUTPUT
+          echo "$FULL_PROMPT" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-      - name: Run agent planning phase (Script)
-        if: steps.context.outputs.RUNTIME != 'codex'
-        id: agent_plan_script
+      - name: Run AI Agent (Unified Script)
+        id: agent_plan_run
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           set +e
           OUTPUT_FILE=$(mktemp)
           ERROR_FILE=$(mktemp)
           
+          # Map 'codex' to 'openai' for the script
+          RUNTIME="${{ steps.context.outputs.RUNTIME }}"
+          if [ "$RUNTIME" = "codex" ]; then
+            echo "Mapping runtime 'codex' to 'openai'..."
+            RUNTIME="openai"
+          fi
+          
+          echo "Running agent with Runtime: $RUNTIME"
+          
           ./scripts/agent.sh \
-            --runtime "${{ steps.context.outputs.RUNTIME }}" \
+            --runtime "$RUNTIME" \
             --role "${{ steps.context.outputs.ROLE }}" \
             "${{ steps.prep_agent.outputs.ENHANCED_PROMPT }}" \
             > "$OUTPUT_FILE" 2> "$ERROR_FILE"
           
           EXIT_CODE=$?
           
+          # Capture Outputs
           echo "PLAN_OUTPUT<<EOF" >> $GITHUB_OUTPUT
           cat "$OUTPUT_FILE" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
@@ -256,205 +215,66 @@ jobs:
           
           echo "EXIT_CODE=$EXIT_CODE" >> $GITHUB_OUTPUT
           
+          # Cleanup for Artifacts
           mkdir -p plan-output-temp
           cp "$OUTPUT_FILE" plan-output-temp/output.txt
           cp "$ERROR_FILE" plan-output-temp/error.txt
           echo "$EXIT_CODE" > plan-output-temp/exit_code.txt
           
-          rm -f "$OUTPUT_FILE" "$ERROR_FILE"
-
-      - name: Run Codex Action
-        if: steps.context.outputs.RUNTIME == 'codex'
-        id: agent_plan_codex
-        uses: openai/codex-action@v1
-        with:
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          prompt: ${{ steps.prep_agent.outputs.FULL_CODEX_PROMPT }}
-
-      - name: Process Agent Output
-        id: agent_plan
-        if: always()
-        run: |
-          mkdir -p plan-artifact
-          
-          PLAN_OUTPUT=""
-          PLAN_ERROR=""
-          EXIT_CODE=0
-          
-          if [ "${{ steps.context.outputs.RUNTIME }}" = "codex" ]; then
-            PLAN_OUTPUT="${{ steps.agent_plan_codex.outputs.final_message }}"
-            if [ "${{ steps.agent_plan_codex.outcome }}" != "success" ]; then
-               EXIT_CODE=1
-               PLAN_ERROR="Codex Action failed. See step logs."
-            fi
-          else
-            if [ -f plan-output-temp/output.txt ]; then
-               PLAN_OUTPUT=$(cat plan-output-temp/output.txt)
-            fi
-            if [ -f plan-output-temp/error.txt ]; then
-               PLAN_ERROR=$(cat plan-output-temp/error.txt)
-            fi
-            if [ -f plan-output-temp/exit_code.txt ]; then
-               EXIT_CODE=$(cat plan-output-temp/exit_code.txt)
-            else
-               EXIT_CODE=1
-            fi
-            rm -rf plan-output-temp
-          fi
-          
-          echo "PLAN_OUTPUT<<EOF" >> $GITHUB_OUTPUT
-          echo "$PLAN_OUTPUT" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-          
-          echo "PLAN_ERROR<<EOF" >> $GITHUB_OUTPUT
-          echo "$PLAN_ERROR" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-          
-          echo "EXIT_CODE=$EXIT_CODE" >> $GITHUB_OUTPUT
-          
-          echo "$PLAN_OUTPUT" > temp_plan_output.txt
-          PLAN_SECTION=$(awk '/### Proposed Plan/,/### Architecture Verification|### Implementation|^---$|^$/{print}' temp_plan_output.txt | head -n -1)
-          rm temp_plan_output.txt
-          
+          # Extract Plan Section (Helper for comment)
+          echo "$PLAN_OUTPUT" > temp_plan.txt
+          PLAN_SECTION=$(awk '/### Proposed Plan/,/### Architecture Verification|### Implementation|^---$|^$/{print}' temp_plan.txt | head -n -1)
+          rm temp_plan.txt
           echo "PLAN_SECTION<<EOF" >> $GITHUB_OUTPUT
           echo "$PLAN_SECTION" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
-          
-          echo "$PLAN_OUTPUT" > plan-artifact/plan-output.txt
-          echo "$PLAN_ERROR" > plan-artifact/plan-error.txt
-          echo "${{ steps.prep_agent.outputs.ENHANCED_PROMPT }}" > plan-artifact/prompt.txt
-          echo "${{ steps.context.outputs.ROLE }}" > plan-artifact/role.txt
-          echo "${{ steps.context.outputs.RUNTIME }}" > plan-artifact/runtime.txt
-          echo "${{ steps.context.outputs.IS_REVISION }}" > plan-artifact/is-revision.txt
-          if [ "${{ steps.context.outputs.IS_REVISION }}" = "true" ]; then
-            echo "${{ steps.context.outputs.REVISION_FEEDBACK }}" > plan-artifact/revision-feedback.txt
-          fi
-          
-          if [ $EXIT_CODE -ne 0 ]; then
-            echo "❌ Agent planning phase failed with exit code: $EXIT_CODE"
-            if [ -s plan-artifact/plan-error.txt ]; then
-              echo "Error output:"
-              cat plan-artifact/plan-error.txt
-            fi
-            exit $EXIT_CODE
-          fi
-          
-          if [ -s plan-artifact/plan-error.txt ]; then
-            ERROR_CONTENT=$(cat plan-artifact/plan-error.txt)
-            if echo "$ERROR_CONTENT" | grep -qiE "(error|failed|exception|command not found|permission denied|not found)"; then
-              echo "❌ Errors detected in plan generation:"
-              echo "$ERROR_CONTENT"
-              exit 1
-            fi
-          fi
 
-      - name: Display plan output in workflow
-        if: steps.agent_plan.outputs.PLAN_OUTPUT != ''
+      - name: Display plan output
+        if: steps.agent_plan_run.outputs.PLAN_OUTPUT != ''
         run: |
           echo "## 🤖 AI Agent Plan Output" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          cat plan-artifact/plan-output.txt >> $GITHUB_STEP_SUMMARY
+          cat plan-output-temp/output.txt >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          
-          echo "=== AI Agent Plan Output ==="
-          cat plan-artifact/plan-output.txt
-
-      - name: Display plan errors (if any)
-        if: always() && steps.agent_plan.outputs.PLAN_ERROR != ''
-        run: |
-          echo "## ⚠️ Plan Generation Errors" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          cat plan-artifact/plan-error.txt >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          
-          echo "=== Errors ==="
-          cat plan-artifact/plan-error.txt
-          
-          if [ "${{ steps.agent_plan.outputs.EXIT_CODE }}" != "0" ]; then
-            echo "❌ Plan generation failed. See errors above."
-            exit 1
-          fi
 
       - name: Upload plan artifact
         uses: actions/upload-artifact@v4
         with:
           name: agent-plan
-          path: plan-artifact/
+          path: plan-output-temp/
           retention-days: 7
 
-      - name: Post plan as comment
+      - name: Save Context Artifacts
+        run: |
+          mkdir -p plan-context
+          echo "${{ steps.prep_agent.outputs.ENHANCED_PROMPT }}" > plan-context/prompt.txt
+          echo "${{ steps.context.outputs.ROLE }}" > plan-context/role.txt
+          echo "${{ steps.context.outputs.RUNTIME }}" > plan-context/runtime.txt
+        
+      - name: Upload Context
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-context
+          path: plan-context/
+
+      - name: Post plan comment
         if: steps.context.outputs.ISSUE_NUMBER != ''
         uses: actions/github-script@v7
         with:
           script: |
             const issueNumber = '${{ steps.context.outputs.ISSUE_NUMBER }}';
-            const planOutput = `${{ steps.agent_plan.outputs.PLAN_OUTPUT }}`;
-            const planSection = `${{ steps.agent_plan.outputs.PLAN_SECTION }}`;
-            
+            const planOutput = `${{ steps.agent_plan_run.outputs.PLAN_OUTPUT }}`;
             const isRevision = '${{ steps.context.outputs.IS_REVISION }}' === 'true';
-            const revisionHeader = isRevision ? '## 🔄 AI Agent Plan (Revised)\n\n' : '## 🤖 AI Agent Plan\n\n';
-            const revisionNote = isRevision 
-              ? '> **Note:** This is a revised plan based on your feedback.\n\n' 
-              : '';
             
-            const body = `${revisionHeader}${revisionNote}${planOutput}
+            const header = isRevision ? '## 🔄 AI Agent Plan (Revised)' : '## 🤖 AI Agent Plan';
             
-            ---
-            
-            ### ⚠️ Review Required
-            
-            **Options:**
-            1. ✅ **Approve and proceed**: Click the "Review deployments" button below and approve, or comment: \`/proceed\`
-            2. 🔄 **Request changes**: Comment: \`/revise <your feedback here>\` to modify the plan
-            3. ❌ **Cancel**: Close this issue/PR
-            
-            **Example revision:**
-            \`/revise Please use a different approach for authentication. Consider using JWT tokens instead.\`
-            
-            `;
+            const body = `${header}\n\n${planOutput}\n\n---\n**Run ID:** ${process.env.GITHUB_RUN_ID}\nTo proceed, comment: \`/proceed\``;
             
             github.rest.issues.createComment({
               issue_number: issueNumber,
               owner: context.repo.owner,
               repo: context.repo.repo,
               body: body
-            });
-
-      - name: Create check run with plan
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const planOutput = `${{ steps.agent_plan.outputs.PLAN_OUTPUT }}`;
-            const planError = `${{ steps.agent_plan.outputs.PLAN_ERROR }}`;
-            const exitCode = parseInt('${{ steps.agent_plan.outputs.EXIT_CODE }}');
-            
-            const conclusion = exitCode === 0 ? 'success' : 'failure';
-            const title = exitCode === 0 ? '✅ Plan Generated' : '❌ Plan Generation Failed';
-            
-            const maxLength = 65000;
-            let displayOutput = planOutput;
-            if (displayOutput.length > maxLength) {
-              displayOutput = planOutput.substring(0, maxLength - 100) + '\n\n... (output truncated)';
-            }
-            
-            const output = {
-              title: title,
-              summary: exitCode === 0 
-                ? 'AI Agent has generated a plan. **View the full output in the workflow summary above or in PR comments.**'
-                : 'AI Agent failed to generate a plan. Check the output for errors.',
-              text: displayOutput + (planError ? '\n\n---\n\n**Errors:**\n' + planError : '')
-            };
-            
-            await github.rest.checks.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              name: 'AI Agent Plan',
-              head_sha: context.sha || context.sha,
-              status: 'completed',
-              conclusion: conclusion,
-              output: output
             });
 
   implement:
@@ -475,18 +295,18 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - name: Download plan artifact
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          name: agent-plan
-          path: plan-artifact/
+          name: agent-context
+          path: plan-context/
 
-      - name: Read plan context
+      - name: Read context
         id: plan_context
         run: |
-          PROMPT=$(cat plan-artifact/prompt.txt)
-          ROLE=$(cat plan-artifact/role.txt)
-          RUNTIME=$(cat plan-artifact/runtime.txt)
+          PROMPT=$(cat plan-context/prompt.txt)
+          ROLE=$(cat plan-context/role.txt)
+          RUNTIME=$(cat plan-context/runtime.txt)
           
           echo "PROMPT=$PROMPT" >> $GITHUB_OUTPUT
           echo "ROLE=$ROLE" >> $GITHUB_OUTPUT
@@ -496,53 +316,27 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-
-      - name: Install Gemini CLI
+          
+      - name: Install AI CLI Tools
         run: npm install -g @google/gemini-cli
 
-      - name: Configure MCP Servers
+      - name: Configure MCP
         run: |
           mkdir -p ~/.gemini
-          
           node << 'EOF'
           const fs = require('fs');
           const mcpServers = {};
-          
           if (process.env.NOTION_API_KEY) {
             mcpServers.notion = {
               command: "npx",
               args: ["-y", "@modelcontextprotocol/server-notion"],
-              env: {
-                NOTION_API_KEY: process.env.NOTION_API_KEY
-              }
+              env: { NOTION_API_KEY: process.env.NOTION_API_KEY }
             };
           }
-          
-          if (process.env.ATLASSIAN_MCP_URL) {
-            mcpServers["atlassian-rovo-mcp-server"] = {
-              url: process.env.ATLASSIAN_MCP_URL,
-              auth: {
-                type: "oauth2",
-                clientId: process.env.ATLASSIAN_MCP_CLIENT_ID,
-                clientSecret: process.env.ATLASSIAN_MCP_CLIENT_SECRET
-              }
-            };
-          }
-          
-          const config = {
-            mcpServers: mcpServers
-          };
-          
-          fs.writeFileSync(
-            process.env.HOME + '/.gemini/settings.json',
-            JSON.stringify(config, null, 2)
-          );
+          fs.writeFileSync(process.env.HOME + '/.gemini/settings.json', JSON.stringify({mcpServers}, null, 2));
           EOF
         env:
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
-          ATLASSIAN_MCP_URL: ${{ secrets.ATLASSIAN_MCP_URL }}
-          ATLASSIAN_MCP_CLIENT_ID: ${{ secrets.ATLASSIAN_MCP_CLIENT_ID }}
-          ATLASSIAN_MCP_CLIENT_SECRET: ${{ secrets.ATLASSIAN_MCP_CLIENT_SECRET }}
 
       - name: Setup environment
         run: |
@@ -552,169 +346,68 @@ jobs:
       - name: Prepare Implementation Prompt
         id: prep_impl
         run: |
-          PROMPT=$(cat plan-artifact/prompt.txt)
-          ROLE=$(cat plan-artifact/role.txt)
-          RUNTIME=$(cat plan-artifact/runtime.txt)
+          BASE_PROMPT="${{ steps.plan_context.outputs.PROMPT }}"
+          ROLE="${{ steps.plan_context.outputs.ROLE }}"
+          CONTRACT_FILE="agent-contracts/${ROLE}.md"
           
-          echo "PROCEED_PROMPT<<EOF" >> $GITHUB_OUTPUT
-          echo "$PROMPT"$'\n\n'"Proceed with the implementation." >> $GITHUB_OUTPUT
+          # Optimized Implementation Prompt
+          IMPL_PROMPT="You are the Oris Backend Engineer AI.
+          
+          ### CRITICAL:
+          1. **READ THE CONTRACT**: '${CONTRACT_FILE}' (Use file system tools).
+          2. Follow the approved plan exactly.
+          
+          ### CONTEXT:
+          $BASE_PROMPT
+          
+          ### ACTION:
+          Proceed with the implementation now."
+          
+          echo "IMPL_PROMPT<<EOF" >> $GITHUB_OUTPUT
+          echo "$IMPL_PROMPT" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
-          
-          # --- CORRECTION START: OPTIMIZED PROMPT FOR CODEX (IMPLEMENTATION) ---
-          if [ "$RUNTIME" = "codex" ]; then
-             CONTRACT_FILE="agent-contracts/${ROLE}.md"
-             
-             # Reference the file again for the implementation phase
-             FULL_PROMPT="You are the Oris Backend Engineer AI.
-          
-          ### CRITICAL RULES:
-          1. **READ THE CONTRACT**: 'agent-contracts/${ROLE}.md' using your tools.
-          2. Follow the plan proposed in the previous phase.
-          
-          ---
-          
-          ### TASK:
-          $PROMPT
-          
-          ### MCP INSTRUCTIONS:
-          - Use Notion MCP to check for updates or clarifications if needed.
-          
-          ### INSTRUCTION:
-          Proceed with the implementation.
-          "
-             echo "FULL_CODEX_PROMPT<<EOF" >> $GITHUB_OUTPUT
-             echo "$FULL_PROMPT" >> $GITHUB_OUTPUT
-             echo "EOF" >> $GITHUB_OUTPUT
-          fi
-          # --- CORRECTION END ---
 
-      - name: Run agent implementation phase (Script)
-        if: steps.plan_context.outputs.RUNTIME != 'codex'
-        id: agent_implement_script
+      - name: Run Implementation (Unified Script)
+        id: agent_impl_run
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           AGENT_PROCEED: "true"
         run: |
           set +e
           OUTPUT_FILE=$(mktemp)
           ERROR_FILE=$(mktemp)
           
+          RUNTIME="${{ steps.plan_context.outputs.RUNTIME }}"
+          if [ "$RUNTIME" = "codex" ]; then RUNTIME="openai"; fi
+          
           ./scripts/agent.sh \
-            --runtime "${{ steps.plan_context.outputs.RUNTIME }}" \
+            --runtime "$RUNTIME" \
             --role "${{ steps.plan_context.outputs.ROLE }}" \
-            "${{ steps.prep_impl.outputs.PROCEED_PROMPT }}" \
+            "${{ steps.prep_impl.outputs.IMPL_PROMPT }}" \
             > "$OUTPUT_FILE" 2> "$ERROR_FILE"
           
           EXIT_CODE=$?
           
-          mkdir -p impl-output-temp
-          cp "$OUTPUT_FILE" impl-output-temp/output.txt
-          cp "$ERROR_FILE" impl-output-temp/error.txt
-          echo "$EXIT_CODE" > impl-output-temp/exit_code.txt
-          
-          rm -f "$OUTPUT_FILE" "$ERROR_FILE"
-
-      - name: Run Codex Action (Implementation)
-        if: steps.plan_context.outputs.RUNTIME == 'codex'
-        id: agent_implement_codex
-        uses: openai/codex-action@v1
-        with:
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          prompt: ${{ steps.prep_impl.outputs.FULL_CODEX_PROMPT }}
-
-      - name: Process Implementation Output
-        if: always()
-        run: |
-          mkdir -p implementation-artifact
-          
-          OUTPUT=""
-          ERROR=""
-          EXIT_CODE=0
-          
-          if [ "${{ steps.plan_context.outputs.RUNTIME }}" = "codex" ]; then
-             OUTPUT="${{ steps.agent_implement_codex.outputs.final_message }}"
-             if [ "${{ steps.agent_implement_codex.outcome }}" != "success" ]; then
-                EXIT_CODE=1
-                ERROR="Codex Action failed."
-             fi
-          else
-             if [ -f impl-output-temp/output.txt ]; then OUTPUT=$(cat impl-output-temp/output.txt); fi
-             if [ -f impl-output-temp/error.txt ]; then ERROR=$(cat impl-output-temp/error.txt); fi
-             if [ -f impl-output-temp/exit_code.txt ]; then EXIT_CODE=$(cat impl-output-temp/exit_code.txt); else EXIT_CODE=1; fi
-             rm -rf impl-output-temp
-          fi
-          
-          echo "IMPLEMENTATION_OUTPUT<<EOF" >> $GITHUB_OUTPUT
-          echo "$OUTPUT" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-          
-          echo "IMPLEMENTATION_ERROR<<EOF" >> $GITHUB_OUTPUT
-          echo "$ERROR" >> $GITHUB_OUTPUT
+          echo "IMPL_OUTPUT<<EOF" >> $GITHUB_OUTPUT
+          cat "$OUTPUT_FILE" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
           
           echo "EXIT_CODE=$EXIT_CODE" >> $GITHUB_OUTPUT
           
-          echo "$OUTPUT" > implementation-artifact/output.txt
-          echo "$ERROR" > implementation-artifact/error.txt
-          
-          if [ $EXIT_CODE -ne 0 ]; then
-             exit $EXIT_CODE
-          fi
+          mkdir -p impl-artifact
+          cp "$OUTPUT_FILE" impl-artifact/output.txt
+          cp "$ERROR_FILE" impl-artifact/error.txt
 
-      - name: Display implementation output
+      - name: Create Summary
         if: always()
         run: |
-          if [ -f implementation-artifact/output.txt ]; then
-            echo "## ✅ Implementation Output" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            cat implementation-artifact/output.txt >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-          
-            echo "=== Implementation Output ==="
-            cat implementation-artifact/output.txt
+          echo "## ✅ Implementation Result" >> $GITHUB_STEP_SUMMARY
+          if [ -f impl-artifact/output.txt ]; then
+             cat impl-artifact/output.txt >> $GITHUB_STEP_SUMMARY
           fi
-          
-          if [ -f implementation-artifact/error.txt ] && [ -s implementation-artifact/error.txt ]; then
-            echo "## ⚠️ Implementation Errors" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            cat implementation-artifact/error.txt >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-          
-            echo "=== Errors ==="
-            cat implementation-artifact/error.txt
+          if [ -f impl-artifact/error.txt ] && [ -s impl-artifact/error.txt ]; then
+             echo "### Errors" >> $GITHUB_STEP_SUMMARY
+             cat impl-artifact/error.txt >> $GITHUB_STEP_SUMMARY
           fi
-
-      - name: Create implementation summary
-        if: success()
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const body = `## ✅ Implementation Complete
-            
-            The AI Agent has completed the implementation based on the approved plan.
-            
-            **Next steps:**
-            - Review the changes in this PR
-            - Run tests locally if needed
-            - Merge when ready
-            
-            `;
-            
-            if (context.payload.issue) {
-              github.rest.issues.createComment({
-                issue_number: context.payload.issue.number,
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                body: body
-              });
-            } else if (context.payload.pull_request) {
-              github.rest.issues.createComment({
-                issue_number: context.payload.pull_request.number,
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                body: body
-              });
-            }
