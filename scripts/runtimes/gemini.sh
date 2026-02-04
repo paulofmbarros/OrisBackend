@@ -4,7 +4,8 @@ set -euo pipefail
 CONTRACT_FILE="$1"
 USER_PROMPT="$2"
 CACHE_DIR="$(dirname "$0")/../../tmp/cache"
-mkdir -p "$CACHE_DIR"
+STATE_DIR="$(dirname "$0")/../../tmp/state"
+mkdir -p "$CACHE_DIR" "$STATE_DIR"
 
 # --- Phase 3: Optimizations ---
 
@@ -43,27 +44,58 @@ if [[ "$PROCEED_MODE" == "true" ]] || echo "$USER_PROMPT" | grep -qi "proceed wi
       --allowed-mcp-server-names notion,atlassian-rovo-mcp-server \
       "$USER_PROMPT"; then
     EXIT_CODE=0
+    # On success, we don't need to do anything special
   else
-    echo "Resumption failed. Using full context."
-    FULL_PROMPT=$(build_full_prompt "$USER_PROMPT")
-    gemini \
-      --approval-mode default \
-      --allowed-mcp-server-names notion,atlassian-rovo-mcp-server \
-      "$FULL_PROMPT"
-    EXIT_CODE=$?
+    echo "Session resumption failed. Checking for universal shared state..."
+    ACTIVE_PLAN_FILE="$STATE_DIR/active_plan.md"
+    
+    if [[ -f "$ACTIVE_PLAN_FILE" ]]; then
+      echo "Found active plan in shared state. Injecting into context..."
+      PLAN_CONTENT=$(cat "$ACTIVE_PLAN_FILE")
+      
+      # Hybrid Prompt: Contract + Shared Plan + Instruction
+      FULL_PROMPT="$MINIFIED_CONTRACT
+
+---
+
+## CONTEXT: EXISTING PLAN
+The following plan has been approved. You must implement it exactly.
+
+$PLAN_CONTENT
+
+---
+
+## USER INSTRUCTION:
+$USER_PROMPT"
+
+      gemini \
+        --approval-mode default \
+        --allowed-mcp-server-names notion,atlassian-rovo-mcp-server \
+        "$FULL_PROMPT"
+      EXIT_CODE=$?
+    else
+      echo "No active plan found. Falling back to simple context."
+      FULL_PROMPT=$(build_full_prompt "$USER_PROMPT")
+      gemini \
+        --approval-mode default \
+        --allowed-mcp-server-names notion,atlassian-rovo-mcp-server \
+        "$FULL_PROMPT"
+      EXIT_CODE=$?
+    fi
   fi
 
   # 3. Auto-Validation Loop (Self-Healing)
   if [[ $EXIT_CODE -eq 0 ]]; then
     MAX_RETRIES=2
     for ((i=1;i<=MAX_RETRIES;i++)); do
+      # Only run build if we suspect code changes (simple check)
+      # or just always run it. Cost is low.
       echo "Verifying build (Attempt $i/$MAX_RETRIES)..."
       if BUILD_OUT=$(dotnet build 2>&1); then
          echo "Build Verification Passed!"
          break
       else
          echo "Build Failed. Attempting auto-fix..."
-         # Capture last 30 lines of error
          ERR_SUMMARY=$(echo "$BUILD_OUT" | tail -n 30)
          
          gemini --resume latest \
@@ -89,6 +121,12 @@ IMPORTANT: Stop after 'Proposed Plan'. Do not implement until I explicitly say: 
   CACHE_LOG="$CACHE_DIR/$CACHE_KEY.log"
   CACHE_SID="$CACHE_DIR/$CACHE_KEY.sid"
 
+  # Function to publish the plan to Shared State
+  publish_to_state() {
+    cp "$1" "$STATE_DIR/active_plan.md"
+    echo "Published plan to shared state ($STATE_DIR/active_plan.md)."
+  }
+
   if [[ -f "$CACHE_LOG" ]] && [[ -f "$CACHE_SID" ]]; then
     # CACHE HIT
     # Self-healing: Check for corruption (cancelled/empty)
@@ -98,6 +136,8 @@ IMPORTANT: Stop after 'Proposed Plan'. Do not implement until I explicitly say: 
     else
       echo "Serving from cache..."
       cat "$CACHE_LOG"
+      # IMPORTANT: Publish to state even on Cache Hit, so 'Proceed' works for new runtimes
+      publish_to_state "$CACHE_LOG"
       exit 0
     fi
   fi
@@ -124,8 +164,9 @@ IMPORTANT: Stop after 'Proposed Plan'. Do not implement until I explicitly say: 
 
   if [[ $EXIT_CODE -eq 0 ]]; then
     mv "$TEMP_LOG" "$CACHE_LOG"
+    publish_to_state "$CACHE_LOG"
     
-    # Capture Session ID (Text format support)
+    # Capture Session ID
     LATEST_SID=$(gemini --list-sessions | tail -1 | grep -oE "\[[0-9a-f-]{36}\]" | tr -d '[]')
     if [[ -n "$LATEST_SID" ]]; then
       echo "$LATEST_SID" > "$CACHE_SID"
