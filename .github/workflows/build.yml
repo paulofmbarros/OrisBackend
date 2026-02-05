@@ -13,11 +13,10 @@ env:
   CONFIGURATION: Release
 
 jobs:
-  # -- JOB 1: BUILD, TEST & SONARQUBE (Linux para Testcontainers) --
+  # -- JOB 1: BUILD, TEST & SONARQUBE --
   build:
     name: Build and analyze
     runs-on: ubuntu-latest
-
     steps:
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -34,13 +33,6 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Cache NuGet
-        uses: actions/cache@v4
-        with:
-          path: ~/.nuget/packages
-          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
-          restore-keys: ${{ runner.os }}-nuget-
-
       - name: Install Tools
         run: |
           mkdir -p ${{ runner.temp }}/scanner
@@ -50,7 +42,7 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
-          # Usa a variável $SONAR_TOKEN do shell, não a expansão direta do GitHub
+          # No Linux usa-versa $SONAR_TOKEN
           ${{ runner.temp }}/scanner/dotnet-sonarscanner begin \
             /k:"paulofmbarros_OrisBackend" \
             /o:"oris" \
@@ -75,7 +67,7 @@ jobs:
           name: web-app-package
           path: ./publish
 
-  # -- JOB 2: SECURITY ANALYSIS (CodeQL v4) --
+  # -- JOB 2: SECURITY ANALYSIS --
   codeql:
     name: CodeQL Security Analysis
     runs-on: ubuntu-latest
@@ -91,7 +83,7 @@ jobs:
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
 
-  # -- JOB 3: DEPLOY (Windows para MSDeploy) --
+  # -- JOB 3: DEPLOY (Corrigido para evitar avisos de segurança no Windows) --
   deploy:
     name: Deploy to MonsterASP
     needs: build
@@ -106,11 +98,18 @@ jobs:
 
       - name: Deploy via WebDeploy
         shell: powershell
+        env:
+          # Mapeando todos os segredos do deploy aqui
+          SITE_NAME: ${{ secrets.WEBDEPLOY_SITE_NAME }}
+          SERVER: ${{ secrets.WEBDEPLOY_SERVER }}
+          USERNAME: ${{ secrets.WEBDEPLOY_USERNAME }}
+          PASSWORD: ${{ secrets.WEBDEPLOY_PASSWORD }}
         run: |
           $publishPath = Resolve-Path ./publish
+          # No Windows/PowerShell usa-se $env:VAR_NAME para máxima segurança
           & "C:\Program Files\IIS\Microsoft Web Deploy V3\msdeploy.exe" `
             -verb:sync `
             -source:contentPath="$publishPath" `
-            -dest:contentPath="${{ secrets.WEBDEPLOY_SITE_NAME }}",computerName="https://${{ secrets.WEBDEPLOY_SERVER }}:8172/msdeploy.axd?site=${{ secrets.WEBDEPLOY_SITE_NAME }}",username="${{ secrets.WEBDEPLOY_USERNAME }}",password="${{ secrets.WEBDEPLOY_PASSWORD }}",authtype=Basic `
+            -dest:contentPath="$env:SITE_NAME",computerName="https://$($env:SERVER):8172/msdeploy.axd?site=$env:SITE_NAME",username="$env:USERNAME",password="$env:PASSWORD",authtype=Basic `
             -allowUntrusted `
             -enableRule:AppOffline
