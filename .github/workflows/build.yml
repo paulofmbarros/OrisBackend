@@ -64,22 +64,24 @@ jobs:
           dotnet tool update dotnet-sonarscanner --tool-path ${{ runner.temp }}\scanner
 
       - name: Restore dependencies
-        run: dotnet restore
+        # FIXED: Targeting the solution file in the root
+        run: dotnet restore OrisBackend.sln
 
       # -- Code Quality Checks --
 
       - name: Check code formatting
-        run: dotnet format --verify-no-changes --verbosity diagnostic
+        # Using solution allows it to check all projects at once
+        run: dotnet format OrisBackend.sln --verify-no-changes --verbosity diagnostic
         continue-on-error: true
 
       - name: Check for vulnerable packages
-        run: dotnet list package --vulnerable --include-transitive
+        run: dotnet list OrisBackend.sln package --vulnerable --include-transitive
         continue-on-error: true
 
       - name: Run dotnet outdated check
         run: |
           dotnet tool install --global dotnet-outdated-tool
-          dotnet outdated
+          dotnet outdated OrisBackend.sln
         continue-on-error: true
 
       # -- Build & Test (SonarQube Analysis) --
@@ -91,11 +93,11 @@ jobs:
         run: |
           ${{ runner.temp }}\scanner\dotnet-sonarscanner begin /k:"paulofmbarros_OrisBackend" /o:"paulofmbarros" /d:sonar.token="${{ secrets.SONAR_TOKEN }}" /d:sonar.cs.opencover.reportsPaths="**/coverage.opencover.xml"
           
-          # FIXED: Added path to specific project to be safe
-          dotnet build src/Oris.Api/Oris.Api.csproj --no-restore --configuration ${{ env.CONFIGURATION }}
+          # FIXED: Build the solution file
+          dotnet build OrisBackend.sln --no-restore --configuration ${{ env.CONFIGURATION }}
           
-          # FIXED: Added path to specific project
-          dotnet test src/Oris.Api/Oris.Api.csproj --no-build --configuration ${{ env.CONFIGURATION }} --collect:"XPlat Code Coverage" --logger trx --results-directory ./TestResults/ -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover
+          # FIXED: Test the solution file
+          dotnet test OrisBackend.sln --no-build --configuration ${{ env.CONFIGURATION }} --collect:"XPlat Code Coverage" --logger trx --results-directory ./TestResults/ -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover
           
           ${{ runner.temp }}\scanner\dotnet-sonarscanner end /d:sonar.token="${{ secrets.SONAR_TOKEN }}"
         continue-on-error: true
@@ -103,7 +105,7 @@ jobs:
       - name: Generate SBOM
         run: |
           dotnet tool install --global CycloneDX
-          dotnet CycloneDX **/*.csproj -o ./sbom -f json
+          dotnet CycloneDX OrisBackend.sln -o ./sbom -f json
         continue-on-error: true
 
       # -- Upload Artifacts --
@@ -155,7 +157,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 1. Start CodeQL Listener
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
@@ -167,14 +168,11 @@ jobs:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
       - name: Restore dependencies
-        run: dotnet restore
+        run: dotnet restore OrisBackend.sln
 
-      # 2. Build - CRITICAL FIXES HERE
       - name: Build
-        # We explicitly point to the csproj AND disable shared compilation
-        run: dotnet build src/Oris.Api/Oris.Api.csproj --no-restore --configuration Release -p:UseSharedCompilation=false
+        run: dotnet build OrisBackend.sln --no-restore --configuration Release -p:UseSharedCompilation=false
 
-      # 3. Analyze what was built
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
         with:
