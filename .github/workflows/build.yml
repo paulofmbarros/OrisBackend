@@ -90,13 +90,15 @@ jobs:
         shell: powershell
         run: |
           ${{ runner.temp }}\scanner\dotnet-sonarscanner begin /k:"paulofmbarros_OrisBackend" /o:"paulofmbarros" /d:sonar.token="${{ secrets.SONAR_TOKEN }}" /d:sonar.cs.opencover.reportsPaths="**/coverage.opencover.xml"
-          dotnet build --no-restore --configuration ${{ env.CONFIGURATION }}
           
-          # This might warn if no tests found, but usually doesn't fail the build command itself
-          dotnet test --no-build --configuration ${{ env.CONFIGURATION }} --collect:"XPlat Code Coverage" --logger trx --results-directory ./TestResults/ -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover
+          # FIXED: Added path to specific project to be safe
+          dotnet build src/Oris.Api/Oris.Api.csproj --no-restore --configuration ${{ env.CONFIGURATION }}
+          
+          # FIXED: Added path to specific project
+          dotnet test src/Oris.Api/Oris.Api.csproj --no-build --configuration ${{ env.CONFIGURATION }} --collect:"XPlat Code Coverage" --logger trx --results-directory ./TestResults/ -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover
           
           ${{ runner.temp }}\scanner\dotnet-sonarscanner end /d:sonar.token="${{ secrets.SONAR_TOKEN }}"
-        continue-on-error: true # Prevents failure if Sonar token is missing or tests are missing
+        continue-on-error: true
 
       - name: Generate SBOM
         run: |
@@ -132,12 +134,12 @@ jobs:
       - name: Test Report
         uses: dorny/test-reporter@v1
         if: always()
-        continue-on-error: true # <--- FIXED: Prevents pipeline failure when no tests exist
+        continue-on-error: true
         with:
           name: .NET Tests
           path: '**/TestResults/*.trx'
           reporter: dotnet-trx
-          fail-on-error: 'false' # <--- FIXED: Tells the action to be lenient
+          fail-on-error: 'false'
 
   # -- Security Analysis --
 
@@ -153,6 +155,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 1. Start CodeQL Listener
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
@@ -166,8 +169,13 @@ jobs:
       - name: Restore dependencies
         run: dotnet restore
 
+      # 2. Build - CRITICAL FIXES HERE
       - name: Build
-        run: dotnet build --no-restore --configuration Release
+        # We explicitly point to the csproj AND disable shared compilation
+        run: dotnet build src/Oris.Api/Oris.Api.csproj --no-restore --configuration Release -p:UseSharedCompilation=false
 
+      # 3. Analyze what was built
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:csharp"
