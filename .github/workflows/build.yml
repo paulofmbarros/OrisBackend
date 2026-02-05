@@ -13,6 +13,7 @@ env:
   CONFIGURATION: Release
 
 jobs:
+  # -- JOB 1: BUILD, TEST & SONARQUBE --
   build:
     name: Build and analyze
     runs-on: windows-latest
@@ -64,22 +65,23 @@ jobs:
           dotnet tool update dotnet-sonarscanner --tool-path ${{ runner.temp }}\scanner
 
       - name: Restore dependencies
-        run: dotnet restore
+        # FIXED: Points to Solution file
+        run: dotnet restore OrisBackend.sln
 
       # -- Code Quality Checks --
 
       - name: Check code formatting
-        run: dotnet format --verify-no-changes --verbosity diagnostic
+        run: dotnet format OrisBackend.sln --verify-no-changes --verbosity diagnostic
         continue-on-error: true
 
       - name: Check for vulnerable packages
-        run: dotnet list package --vulnerable --include-transitive
+        run: dotnet list OrisBackend.sln package --vulnerable --include-transitive
         continue-on-error: true
 
       - name: Run dotnet outdated check
         run: |
           dotnet tool install --global dotnet-outdated-tool
-          dotnet outdated
+          dotnet outdated OrisBackend.sln
         continue-on-error: true
 
       # -- Build & Test (SonarQube Analysis) --
@@ -90,18 +92,20 @@ jobs:
         shell: powershell
         run: |
           ${{ runner.temp }}\scanner\dotnet-sonarscanner begin /k:"paulofmbarros_OrisBackend" /o:"paulofmbarros" /d:sonar.token="${{ secrets.SONAR_TOKEN }}" /d:sonar.cs.opencover.reportsPaths="**/coverage.opencover.xml"
-          dotnet build --no-restore --configuration ${{ env.CONFIGURATION }}
           
-          # This might warn if no tests found, but usually doesn't fail the build command itself
-          dotnet test --no-build --configuration ${{ env.CONFIGURATION }} --collect:"XPlat Code Coverage" --logger trx --results-directory ./TestResults/ -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover
+          # FIXED: Build the Solution file
+          dotnet build OrisBackend.sln --no-restore --configuration ${{ env.CONFIGURATION }}
+          
+          # FIXED: Test the Solution file
+          dotnet test OrisBackend.sln --no-build --configuration ${{ env.CONFIGURATION }} --collect:"XPlat Code Coverage" --logger trx --results-directory ./TestResults/ -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover
           
           ${{ runner.temp }}\scanner\dotnet-sonarscanner end /d:sonar.token="${{ secrets.SONAR_TOKEN }}"
-        continue-on-error: true # Prevents failure if Sonar token is missing or tests are missing
+        continue-on-error: true
 
       - name: Generate SBOM
         run: |
           dotnet tool install --global CycloneDX
-          dotnet CycloneDX **/*.csproj -o ./sbom -f json
+          dotnet CycloneDX OrisBackend.sln -o ./sbom -f json
         continue-on-error: true
 
       # -- Upload Artifacts --
@@ -132,14 +136,15 @@ jobs:
       - name: Test Report
         uses: dorny/test-reporter@v1
         if: always()
-        continue-on-error: true # <--- FIXED: Prevents pipeline failure when no tests exist
+        continue-on-error: true
         with:
           name: .NET Tests
           path: '**/TestResults/*.trx'
           reporter: dotnet-trx
-          fail-on-error: 'false' # <--- FIXED: Tells the action to be lenient
+          fail-on-error: 'false'
 
-  # -- Security Analysis --
+  # -- JOB 2: SECURITY ANALYSIS (CodeQL) --
+  # This job runs independently and does NOT need to compile the code anymore.
 
   codeql:
     name: CodeQL Security Analysis
@@ -153,21 +158,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # CRITICAL FIX: "build-mode: none"
+      # This tells CodeQL to read C# files directly without needing a compiler.
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
           languages: csharp
+          build-mode: none
 
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
-
-      - name: Restore dependencies
-        run: dotnet restore
-
-      - name: Build
-        run: dotnet build --no-restore --configuration Release
+      # NOTE: "dotnet build" steps are removed here because
+      # build-mode: none doesn't use them.
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:csharp"
