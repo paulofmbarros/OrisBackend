@@ -1,10 +1,10 @@
 name: Deploy to Production
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Allows manual trigger from the Actions tab
 
 env:
-  DOTNET_VERSION: '8.0.x' 
+  DOTNET_VERSION: '10.0.x'
   CONFIGURATION: Release
 
 jobs:
@@ -21,55 +21,52 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
+      # MonsterASP requires Web Deploy, which isn't pre-installed on GitHub runners
       - name: Install Web Deploy
         shell: powershell
         run: choco install webdeploy
 
-      # FIXED: Search for the ACTUAL filename found in your logs
+      # We use the exact project name discovered in your previous debug logs
       - name: Find API Project
         shell: powershell
         run: |
-          # We now know the exact name from your debug logs
           $project = Get-ChildItem -Recurse -Filter "Oris.WebApplication.csproj" | Select-Object -First 1
-          
           if (-not $project) {
-              Write-Error "Could not find 'Oris.WebApplication.csproj'. Please verify the file exists."
+              Write-Error "Could not find 'Oris.WebApplication.csproj'. Verify the file exists in your repository."
               exit 1
           }
-          
           echo "PROJECT_PATH=$($project.FullName)" >> $env:GITHUB_ENV
-          Write-Host "TARGETING PROJECT: $($project.FullName)"
+          Write-Host "Targeting: $($project.FullName)"
 
       - name: Restore dependencies
-        # Restore the specific project we found
         run: dotnet restore "${{ env.PROJECT_PATH }}"
 
       - name: Build
         run: dotnet build "${{ env.PROJECT_PATH }}" --configuration ${{ env.CONFIGURATION }} --no-restore
 
-      # Note: We skip running tests here to speed up deploy, assuming build.yml already passed.
-      # If you want tests, you can add them back, targeting the solution.
-
       - name: Publish
-        # Publish specifically the WebApplication project
+        # We publish the specific WebApplication project to a local folder named 'publish'
         run: dotnet publish "${{ env.PROJECT_PATH }}" --configuration ${{ env.CONFIGURATION }} --output ./publish
 
       - name: Deploy to IIS via WebDeploy
         shell: powershell
         run: |
-          # Dynamic msdeploy finding
+          # Find the msdeploy executable installed by choco
           $msdeployPath = "C:\Program Files\IIS\Microsoft Web Deploy V3\msdeploy.exe"
           if (-not (Test-Path $msdeployPath)) {
               $command = Get-Command msdeploy.exe -ErrorAction SilentlyContinue
               if ($command) { $msdeployPath = $command.Source }
           }
 
+          # Convert relative path to absolute Windows path for msdeploy
           $publishPath = Convert-Path ./publish
           Write-Host "Deploying from: $publishPath"
           
+          # MonsterASP specific deployment command
+          # Note: We use port 8172 and the site name in the query string
           & $msdeployPath `
             -verb:sync `
             -source:contentPath="$publishPath" `
-            -dest:contentPath="${{ secrets.WEBDEPLOY_SITE_PATH }}",computerName="https://${{ secrets.WEBDEPLOY_SERVER }}/msdeploy.axd?site=${{ secrets.WEBDEPLOY_SITE_NAME }}",username="${{ secrets.WEBDEPLOY_USERNAME }}",password="${{ secrets.WEBDEPLOY_PASSWORD }}",authtype=Basic `
+            -dest:contentPath="${{ secrets.WEBDEPLOY_SITE_NAME }}",computerName="https://${{ secrets.WEBDEPLOY_SERVER }}:8172/msdeploy.axd?site=${{ secrets.WEBDEPLOY_SITE_NAME }}",username="${{ secrets.WEBDEPLOY_USERNAME }}",password="${{ secrets.WEBDEPLOY_PASSWORD }}",authtype=Basic `
             -allowUntrusted `
             -enableRule:AppOffline
