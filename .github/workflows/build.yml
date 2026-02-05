@@ -12,7 +12,7 @@ env:
   DOTNET_VERSION: '10.0.x'
   CONFIGURATION: Release
 
-jobs:s
+jobs:
   build:
     name: Build and analyze
     runs-on: windows-latest
