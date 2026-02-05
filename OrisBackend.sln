@@ -1,6 +1,9 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{2F9D3BD4-010A-482C-B6A2-88B78C391E23}"
+	ProjectSection(SolutionItems) = preProject
+		src\commitlint.config.js = src\commitlint.config.js
+	EndProjectSection
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Oris.WebApplication", "src\Oris.Api\Oris.WebApplication\Oris.WebApplication.csproj", "{52B95C2B-8B5D-450C-B39B-630CAF7253E6}"
 EndProject
