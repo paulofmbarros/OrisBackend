@@ -2,9 +2,7 @@ name: Build, Test and Analyze
 
 on:
   push:
-    branches:
-      - main
-      - develop
+    branches: [main, develop]
   pull_request:
     types: [opened, synchronize, reopened]
 
@@ -13,11 +11,9 @@ env:
   CONFIGURATION: Release
 
 jobs:
-  # -- JOB 1: BUILD, TEST & SONARQUBE (Executado em Linux para Testcontainers) --
   build:
     name: Build and analyze
     runs-on: ubuntu-latest
-
     steps:
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -38,9 +34,8 @@ jobs:
         run: |
           mkdir -p ${{ runner.temp }}/scanner
           dotnet tool update dotnet-sonarscanner --tool-path ${{ runner.temp }}/scanner
-          dotnet tool install --global dotnet-outdated-tool
-          dotnet tool install --global CycloneDX
 
+      # Restore explícito de todos os projetos antes do build
       - name: Restore dependencies
         run: dotnet restore OrisBackend.sln
 
@@ -48,7 +43,6 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
-          # Uso seguro de variáveis de ambiente para evitar o erro "Avoid expanding secrets"
           ${{ runner.temp }}/scanner/dotnet-sonarscanner begin \
             /k:"paulofmbarros_OrisBackend" \
             /o:"oris" \
@@ -57,19 +51,15 @@ jobs:
             /d:sonar.host.url="https://sonarcloud.io" \
             /d:sonar.scanner.skipJreProvisioning=true
           
-          # Build da solução completa
-          dotnet build OrisBackend.sln --no-restore --configuration ${{ env.CONFIGURATION }}
+          # Build sem o --no-restore para garantir que o Linux vincule as DLLs corretamente
+          dotnet build OrisBackend.sln --configuration ${{ env.CONFIGURATION }}
           
-          # Execução dos testes com Testcontainers (PostgreSQL 15) nativo no Linux
+          # Execução dos testes (Docker/Testcontainers nativo)
           dotnet test OrisBackend.sln --no-build --configuration ${{ env.CONFIGURATION }} \
             --collect:"XPlat Code Coverage" --logger trx --results-directory ./TestResults/ \
             -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover
           
           ${{ runner.temp }}/scanner/dotnet-sonarscanner end /d:sonar.token="$SONAR_TOKEN"
-
-      - name: Generate SBOM
-        run: dotnet CycloneDX OrisBackend.sln -o ./sbom -f json
-        continue-on-error: true
 
       - name: Publish API
         run: dotnet publish src/Oris.Api/Oris.WebApplication/Oris.WebApplication.csproj -c ${{ env.CONFIGURATION }} -o ./publish
@@ -80,7 +70,6 @@ jobs:
           name: web-app-package
           path: ./publish
 
-  # -- JOB 2: SECURITY ANALYSIS (CodeQL v4) --
   codeql:
     name: CodeQL Security Analysis
     runs-on: ubuntu-latest
@@ -96,7 +85,6 @@ jobs:
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
 
-  # -- JOB 3: DEPLOY (Windows para MSDeploy no MonsterASP) --
   deploy:
     name: Deploy to MonsterASP
     needs: build
@@ -118,7 +106,6 @@ jobs:
           PASSWORD: ${{ secrets.WEBDEPLOY_PASSWORD }}
         run: |
           $publishPath = Resolve-Path ./publish
-          # Execução do MSDeploy usando variáveis de ambiente $env:
           & "C:\Program Files\IIS\Microsoft Web Deploy V3\msdeploy.exe" `
             -verb:sync `
             -source:contentPath="$publishPath" `
