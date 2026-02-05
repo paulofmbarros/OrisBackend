@@ -2,23 +2,18 @@ name: Build, Test and Analyze
 
 on:
   push:
-    branches:
-      - main
-      - develop
+    branches: [main, develop]
   pull_request:
     types: [opened, synchronize, reopened]
 
 env:
-  DOTNET_VERSION: '10.0.x' # .NET 10 is the current LTS in 2026
+  DOTNET_VERSION: '10.0.x'
   CONFIGURATION: Release
 
 jobs:
-  # -- JOB 1: BUILD, TEST & SONARQUBE --
   build:
     name: Build and analyze
-    # CRITICAL: Switched to ubuntu-latest to support Testcontainers (Linux Docker)
     runs-on: ubuntu-latest
-
     steps:
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -35,126 +30,85 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Cache NuGet packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.nuget/packages
-          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
-          restore-keys: |
-            ${{ runner.os }}-nuget-
-
-      - name: Cache SonarQube Cloud packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.sonar/cache
-          key: ${{ runner.os }}-sonar
-          restore-keys: ${{ runner.os }}-sonar
-
-      # Linux path for scanner tool
-      - name: Install SonarQube Cloud scanner
+      - name: Install Tools
         run: |
           mkdir -p ${{ runner.temp }}/scanner
           dotnet tool update dotnet-sonarscanner --tool-path ${{ runner.temp }}/scanner
 
+      # Restore explícito de todos os projetos antes do build
       - name: Restore dependencies
         run: dotnet restore OrisBackend.sln
-
-      # -- Code Quality Checks --
-
-      - name: Check code formatting
-        run: dotnet format OrisBackend.sln --verify-no-changes --verbosity diagnostic
-        continue-on-error: true
-
-      - name: Check for vulnerable packages
-        run: dotnet list OrisBackend.sln package --vulnerable --include-transitive
-        continue-on-error: true
-
-      - name: Run dotnet outdated check
-        run: |
-          dotnet tool install --global dotnet-outdated-tool
-          dotnet outdated OrisBackend.sln
-        continue-on-error: true
-
-      # -- Build & Test (SonarQube Analysis) --
 
       - name: Build and analyze with SonarQube
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        # Using standard shell (bash) for Linux
         run: |
-          ${{ runner.temp }}/scanner/dotnet-sonarscanner begin /k:"paulofmbarros_OrisBackend" /o:"paulofmbarros" /d:sonar.token="${{ secrets.SONAR_TOKEN }}" /d:sonar.cs.opencover.reportsPaths="**/coverage.opencover.xml" /d:sonar.host.url="https://sonarcloud.io"
+          ${{ runner.temp }}/scanner/dotnet-sonarscanner begin \
+            /k:"paulofmbarros_OrisBackend" \
+            /o:"oris" \
+            /d:sonar.token="$SONAR_TOKEN" \
+            /d:sonar.cs.opencover.reportsPaths="**/coverage.opencover.xml" \
+            /d:sonar.host.url="https://sonarcloud.io" \
+            /d:sonar.scanner.skipJreProvisioning=true
           
-          dotnet build OrisBackend.sln --no-restore --configuration ${{ env.CONFIGURATION }}
+          # Build sem o --no-restore para garantir que o Linux vincule as DLLs corretamente
+          dotnet build OrisBackend.sln --configuration ${{ env.CONFIGURATION }}
           
-          # Testcontainers will automatically pull and start PostgreSQL here
-          dotnet test OrisBackend.sln --no-build --configuration ${{ env.CONFIGURATION }} --collect:"XPlat Code Coverage" --logger trx --results-directory ./TestResults/ -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover
+          # Execução dos testes (Docker/Testcontainers nativo)
+          dotnet test OrisBackend.sln --no-build --configuration ${{ env.CONFIGURATION }} \
+            --collect:"XPlat Code Coverage" --logger trx --results-directory ./TestResults/ \
+            -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover
           
-          ${{ runner.temp }}/scanner/dotnet-sonarscanner end /d:sonar.token="${{ secrets.SONAR_TOKEN }}"
-        continue-on-error: true
+          ${{ runner.temp }}/scanner/dotnet-sonarscanner end /d:sonar.token="$SONAR_TOKEN"
 
-      - name: Generate SBOM
-        run: |
-          dotnet tool install --global CycloneDX
-          dotnet CycloneDX OrisBackend.sln -o ./sbom -f json
-        continue-on-error: true
+      - name: Publish API
+        run: dotnet publish src/Oris.Api/Oris.WebApplication/Oris.WebApplication.csproj -c ${{ env.CONFIGURATION }} -o ./publish
 
-      # -- Upload Artifacts --
-
-      - name: Upload SBOM
-        if: always()
+      - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sbom
-          path: './sbom/*.json'
+          name: web-app-package
+          path: ./publish
 
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results
-          path: '**/TestResults/*.trx'
-          if-no-files-found: ignore
-
-      - name: Upload coverage reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-reports
-          path: '**/TestResults/**/coverage.opencover.xml'
-          if-no-files-found: ignore
-
-      # -- Reporting --
-
-      - name: Test Report
-        uses: dorny/test-reporter@v1
-        if: always()
-        continue-on-error: true
-        with:
-          name: .NET Tests
-          path: '**/TestResults/*.trx'
-          reporter: dotnet-trx
-          fail-on-error: 'false'
-
-  # -- JOB 2: SECURITY ANALYSIS (CodeQL) --
   codeql:
     name: CodeQL Security Analysis
     runs-on: ubuntu-latest
     permissions:
-      actions: read
-      contents: read
       security-events: write
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
           languages: csharp
           build-mode: none
-
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
+
+  deploy:
+    name: Deploy to MonsterASP
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    steps:
+      - name: Download Build Artifact
+        uses: actions/download-artifact@v4
         with:
-          category: "/language:csharp"
+          name: web-app-package
+          path: ./publish
+
+      - name: Deploy via WebDeploy
+        shell: powershell
+        env:
+          SITE_NAME: ${{ secrets.WEBDEPLOY_SITE_NAME }}
+          SERVER: ${{ secrets.WEBDEPLOY_SERVER }}
+          USERNAME: ${{ secrets.WEBDEPLOY_USERNAME }}
+          PASSWORD: ${{ secrets.WEBDEPLOY_PASSWORD }}
+        run: |
+          $publishPath = Resolve-Path ./publish
+          & "C:\Program Files\IIS\Microsoft Web Deploy V3\msdeploy.exe" `
+            -verb:sync `
+            -source:contentPath="$publishPath" `
+            -dest:contentPath="$env:SITE_NAME",computerName="https://$($env:SERVER):8172/msdeploy.axd?site=$env:SITE_NAME",username="$env:USERNAME",password="$env:PASSWORD",authtype=Basic `
+            -allowUntrusted `
+            -enableRule:AppOffline

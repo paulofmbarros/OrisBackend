@@ -11,8 +11,8 @@
     </ItemGroup>
 
     <ItemGroup>
-        <ProjectReference Include="..\..\Oris.Application\Oris.Application.csproj" />
-        <ProjectReference Include="..\..\Oris.Infrastructure\Oris.Infrastructure.csproj" />
+        <ProjectReference Include="../../Oris.Application/Oris.Application.csproj" />
+        <ProjectReference Include="../../Oris.Infrastructure/Oris.Infrastructure.csproj" />
     </ItemGroup>
 
 </Project>
