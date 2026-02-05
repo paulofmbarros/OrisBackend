@@ -58,7 +58,7 @@ jobs:
             /d:sonar.token="$SONAR_TOKEN" \
             /d:sonar.cs.opencover.reportsPaths="**/coverage.opencover.xml" \
             /d:sonar.host.url="https://sonarcloud.io" \
-            /d:sonar.projectBaseDir="." \
+            /d:sonar.projectBaseDir="$GITHUB_WORKSPACE" \
             /d:sonar.scanner.skipJreProvisioning=true
           
           # Build sem o --no-restore para garantir que o Linux vincule as DLLs corretamente
