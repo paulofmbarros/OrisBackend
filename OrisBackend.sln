@@ -2,20 +2,20 @@
 Microsoft Visual Studio Solution File, Format Version 12.00
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{2F9D3BD4-010A-482C-B6A2-88B78C391E23}"
 	ProjectSection(SolutionItems) = preProject
-		src\commitlint.config.js = src\commitlint.config.js
+		src/commitlint.config.js = src/commitlint.config.js
 	EndProjectSection
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Oris.WebApplication", "src\Oris.Api\Oris.WebApplication\Oris.WebApplication.csproj", "{52B95C2B-8B5D-450C-B39B-630CAF7253E6}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Oris.WebApplication", "src/Oris.Api/Oris.WebApplication/Oris.WebApplication.csproj", "{52B95C2B-8B5D-450C-B39B-630CAF7253E6}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Oris.Domain", "src\Oris.Domain\Oris.Domain.csproj", "{D9B95C2B-8B5D-450C-B39B-630CAF7253E7}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Oris.Domain", "src/Oris.Domain/Oris.Domain.csproj", "{D9B95C2B-8B5D-450C-B39B-630CAF7253E7}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Oris.Application", "src\Oris.Application\Oris.Application.csproj", "{E9B95C2B-8B5D-450C-B39B-630CAF7253E8}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Oris.Application", "src/Oris.Application/Oris.Application.csproj", "{E9B95C2B-8B5D-450C-B39B-630CAF7253E8}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Oris.Infrastructure", "src\Oris.Infrastructure\Oris.Infrastructure.csproj", "{F9B95C2B-8B5D-450C-B39B-630CAF7253E9}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Oris.Infrastructure", "src/Oris.Infrastructure/Oris.Infrastructure.csproj", "{F9B95C2B-8B5D-450C-B39B-630CAF7253E9}"
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{0AB3BF05-4346-4AA6-1389-037BE0695223}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Oris.Infrastructure.Tests", "tests\Oris.Infrastructure.Tests\Oris.Infrastructure.Tests.csproj", "{F2A927E9-2A0A-47F2-8880-A20D46CDF317}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Oris.Infrastructure.Tests", "tests/Oris.Infrastructure.Tests/Oris.Infrastructure.Tests.csproj", "{F2A927E9-2A0A-47F2-8880-A20D46CDF317}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
