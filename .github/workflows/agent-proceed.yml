@@ -6,7 +6,8 @@ on:
 
 jobs:
   proceed:
-    if: github.event.comment.body == '/proceed' || contains(github.event.comment.body, '/proceed')
+    # Only run if comment is exactly "/proceed" or starts with it
+    if: startsWith(github.event.comment.body, '/proceed')
     runs-on: ubuntu-latest
     environment:
       name: agent-implementation
@@ -16,7 +17,7 @@ jobs:
       issues: write
       pull-requests: write
       checks: write
-      actions: read
+      actions: read # Required to download artifacts from other runs
 
     steps:
       - name: Checkout repository
@@ -37,10 +38,11 @@ jobs:
               issue_number: context.payload.issue.number,
             });
             
-            // Look for comment with "Agent Plan Run ID"
+            // Look for comment with "**Run ID:** <number>" (Matches agent-plan.yml output)
             let planRunId = null;
             for (const comment of comments.data.reverse()) {
-              const match = comment.body.match(/Agent Plan Run ID: (\d+)/);
+              // Regex updated to match the bold markdown used in the Plan phase
+              const match = comment.body.match(/Run ID:\*\* (\d+)/) || comment.body.match(/Run ID: (\d+)/);
               if (match) {
                 planRunId = match[1];
                 break;
@@ -48,17 +50,18 @@ jobs:
             }
             
             if (!planRunId) {
-              core.setFailed('Could not find plan run ID. Please ensure the plan workflow completed successfully.');
+              core.setFailed('Could not find a Plan Run ID in the comments. Please ensure the Plan workflow finished successfully.');
               return;
             }
             
+            console.log(`Found Plan Run ID: ${planRunId}`);
             core.setOutput('run_id', planRunId);
 
-      - name: Download plan artifact
+      - name: Download Context Artifact
         uses: dawidd6/action-download-artifact@v3
         with:
-          name: agent-plan
-          path: plan-artifact/
+          name: agent-context   # <--- CHANGED: We need the context (prompts), not the output
+          path: plan-context/
           github_token: ${{ secrets.GITHUB_TOKEN }}
           run_id: ${{ steps.find_plan.outputs.run_id }}
           if_no_artifact_found: fail
@@ -67,14 +70,15 @@ jobs:
       - name: Read plan context
         id: plan_context
         run: |
-          if [ -f plan-artifact/prompt.txt ]; then
-            PROMPT=$(cat plan-artifact/prompt.txt)
-            ROLE=$(cat plan-artifact/role.txt)
-            RUNTIME=$(cat plan-artifact/runtime.txt)
-            
+          # Now reading from the correct folder 'plan-context'
+          if [ -f plan-context/prompt.txt ]; then
+            PROMPT=$(cat plan-context/prompt.txt)
+            ROLE=$(cat plan-context/role.txt)
+            RUNTIME=$(cat plan-context/runtime.txt)
+          
             JIRA_KEY=""
-            if [ -f plan-artifact/jira_ticket.txt ]; then
-              JIRA_KEY=$(cat plan-artifact/jira_ticket.txt)
+            if [ -f plan-context/jira_ticket.txt ]; then
+              JIRA_KEY=$(cat plan-context/jira_ticket.txt)
             fi
           
             echo "PROMPT=$PROMPT" >> $GITHUB_OUTPUT
@@ -82,7 +86,7 @@ jobs:
             echo "RUNTIME=$RUNTIME" >> $GITHUB_OUTPUT
             echo "JIRA_KEY=$JIRA_KEY" >> $GITHUB_OUTPUT
           else
-            echo "No plan artifact found. Please trigger the plan workflow first."
+            echo "No context files found. The artifact download might have failed."
             exit 1
           fi
 
@@ -94,17 +98,17 @@ jobs:
              # Convert to lowercase
              KEY_LOWER=$(echo "$JIRA_KEY" | tr '[:upper:]' '[:lower:]')
              BRANCH_NAME="feature/$KEY_LOWER"
-             
+          
              echo "Target Branch: $BRANCH_NAME"
              echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_OUTPUT
-             
+          
              # Configure Git
              git config --global user.name "github-actions[bot]"
              git config --global user.email "github-actions[bot]@users.noreply.github.com"
-             
+          
              # Fetch origin
              git fetch origin
-             
+          
              # Switch to branch
              if git rev-parse --verify "origin/$BRANCH_NAME" >/dev/null 2>&1; then
                 echo "Branch exists remotely. Checking out..."
@@ -129,51 +133,27 @@ jobs:
         run: |
           mkdir -p ~/.gemini
           
-          # Use Node.js to generate proper JSON
           node << 'EOF'
           const fs = require('fs');
           const mcpServers = {};
           
-          // Add Notion MCP (required for contract)
           if (process.env.NOTION_API_KEY) {
             mcpServers.notion = {
               command: "npx",
               args: ["-y", "@modelcontextprotocol/server-notion"],
-              env: {
-                NOTION_API_KEY: process.env.NOTION_API_KEY
-              }
+              env: { NOTION_API_KEY: process.env.NOTION_API_KEY }
             };
           }
           
-          // Add Atlassian Rovo MCP (optional)
-          if (process.env.ATLASSIAN_MCP_URL) {
-            mcpServers["atlassian-rovo-mcp-server"] = {
-              url: process.env.ATLASSIAN_MCP_URL,
-              auth: {
-                type: "oauth2",
-                clientId: process.env.ATLASSIAN_MCP_CLIENT_ID,
-                clientSecret: process.env.ATLASSIAN_MCP_CLIENT_SECRET
-              }
-            };
-          }
-          
-          const config = {
-            mcpServers: mcpServers
-          };
+          const config = { mcpServers: mcpServers };
           
           fs.writeFileSync(
             process.env.HOME + '/.gemini/settings.json',
             JSON.stringify(config, null, 2)
           );
-          
-          console.log('MCP servers configured:');
-          console.log(JSON.stringify(config, null, 2));
           EOF
         env:
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
-          ATLASSIAN_MCP_URL: ${{ secrets.ATLASSIAN_MCP_URL }}
-          ATLASSIAN_MCP_CLIENT_ID: ${{ secrets.ATLASSIAN_MCP_CLIENT_ID }}
-          ATLASSIAN_MCP_CLIENT_SECRET: ${{ secrets.ATLASSIAN_MCP_CLIENT_SECRET }}
 
       - name: Setup environment
         run: |
@@ -185,14 +165,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          set +e  # Don't fail immediately, capture output
+          set +e
           
           OUTPUT_FILE=$(mktemp)
           ERROR_FILE=$(mktemp)
           
-          # Modify the prompt to include proceed instruction
-          PROCEED_PROMPT="${{ steps.plan_context.outputs.PROMPT }}"$'\n\n'"Proceed with the implementation."
+          # Append the instruction to proceed
+          PROCEED_PROMPT="${{ steps.plan_context.outputs.PROMPT }}"$'\n\n'"**INSTRUCTION:** The plan is approved. Proceed with the implementation code now."
+          
+          echo "Executing Agent with role: ${{ steps.plan_context.outputs.ROLE }}"
           
           ./scripts/agent.sh \
             --runtime "${{ steps.plan_context.outputs.RUNTIME }}" \
@@ -216,45 +200,40 @@ jobs:
           cp "$OUTPUT_FILE" implementation-artifact/output.txt
           cp "$ERROR_FILE" implementation-artifact/error.txt
           
-          rm -f "$OUTPUT_FILE" "$ERROR_FILE"
-          
-          exit $EXIT_CODE
+          # Check exit code manually to ensure artifacts are uploaded before failing
+          if [ $EXIT_CODE -ne 0 ]; then
+             echo "Agent script failed with exit code $EXIT_CODE"
+             exit $EXIT_CODE
+          fi
 
       - name: Commit and Push Changes
         if: steps.setup_branch.outputs.BRANCH_NAME != ''
         run: |
-           BRANCH_NAME="${{ steps.setup_branch.outputs.BRANCH_NAME }}"
-           git add .
-           if ! git diff --cached --quiet; then
-              git commit -m "feat: Implementation for ${{ steps.plan_context.outputs.JIRA_KEY }}"
-              git push origin "$BRANCH_NAME"
-           else
-              echo "No changes to commit."
-           fi
+          BRANCH_NAME="${{ steps.setup_branch.outputs.BRANCH_NAME }}"
+          git add .
+          if ! git diff --cached --quiet; then
+             # Using a conventional commit message
+             git commit -m "feat: Implementation for ${{ steps.plan_context.outputs.JIRA_KEY }}"
+             git push origin "$BRANCH_NAME"
+          else
+             echo "No changes to commit."
+          fi
 
       - name: Display implementation output
         if: always()
         run: |
           if [ -f implementation-artifact/output.txt ]; then
             echo "## ✅ Implementation Output" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
             cat implementation-artifact/output.txt >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
-          
-            echo "=== Implementation Output ==="
-            cat implementation-artifact/output.txt
           fi
           
           if [ -f implementation-artifact/error.txt ] && [ -s implementation-artifact/error.txt ]; then
             echo "## ⚠️ Implementation Errors" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
             cat implementation-artifact/error.txt >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
-          
-            echo "=== Errors ==="
-            cat implementation-artifact/error.txt
           fi
 
       - name: Post implementation summary
@@ -267,9 +246,9 @@ jobs:
             The AI Agent has completed the implementation based on the approved plan.
             
             **Next steps:**
-            - Review the changes in this PR
-            - Run tests locally if needed
-            - Merge when ready`;
+            1. Review the code changes in this PR.
+            2. Run your tests locally.
+            3. Merge when ready.`;
             
             github.rest.issues.createComment({
               issue_number: context.payload.issue.number,
