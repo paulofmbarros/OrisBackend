@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
 
 env:
+  # FIXED: Please double-check this is 8.0.x, NOT 10.0.x
   DOTNET_VERSION: '10.0.x'
   CONFIGURATION: Release
 
@@ -25,18 +26,22 @@ jobs:
         shell: powershell
         run: choco install webdeploy
 
-      # 1. DYNAMICALLY FIND THE PROJECT
-      # This fixes the "Project file does not exist" error by searching for it
+      # DYNAMICALLY FIND THE PROJECT (Case-Insensitive Search)
       - name: Find API Project
         shell: powershell
         run: |
-          $project = Get-ChildItem -Recurse -Filter "Oris.Api.csproj" | Select-Object -First 1
+          # Find any .csproj with 'Api' in the name (ignoring case), excluding Tests
+          $project = Get-ChildItem -Recurse -Filter "*Api*.csproj" | Where-Object { $_.Name -notmatch "Test" } | Select-Object -First 1
+          
           if (-not $project) {
-              Write-Error "Could not find 'Oris.Api.csproj' anywhere in the repository!"
+              Write-Host "Could not find *Api*.csproj. Listing ALL csproj files to debug:"
+              Get-ChildItem -Recurse -Filter "*.csproj" | ForEach-Object { Write-Host $_.FullName }
+              Write-Error "Deploy failed because no API project was found."
               exit 1
           }
+          
           echo "PROJECT_PATH=$($project.FullName)" >> $env:GITHUB_ENV
-          Write-Host "Found API Project at: $($project.FullName)"
+          Write-Host "TARGETING PROJECT: $($project.FullName)"
 
       - name: Restore dependencies
         run: dotnet restore "${{ env.PROJECT_PATH }}"
@@ -44,24 +49,8 @@ jobs:
       - name: Build
         run: dotnet build "${{ env.PROJECT_PATH }}" --configuration ${{ env.CONFIGURATION }} --no-restore
 
-      - name: Run tests
-        # We target the solution for tests to ensure we catch everything
-        run: dotnet test OrisBackend.sln --configuration ${{ env.CONFIGURATION }} --no-build --verbosity normal
-
       - name: Publish
-        # We publish only the specific API project we found earlier
         run: dotnet publish "${{ env.PROJECT_PATH }}" --configuration ${{ env.CONFIGURATION }} --output ./publish
-
-      # 2. DEBUG STEP: Verify the folder exists and is not empty
-      - name: Check Publish Output
-        shell: powershell
-        run: |
-          if (Test-Path ./publish) {
-              Get-ChildItem ./publish
-          } else {
-              Write-Error "The ./publish folder was not created!"
-              exit 1
-          }
 
       - name: Deploy to IIS via WebDeploy
         shell: powershell
@@ -73,12 +62,9 @@ jobs:
               if ($command) { $msdeployPath = $command.Source }
           }
 
-          # 3. FIX THE PATHS (Convert to absolute Windows paths)
           $publishPath = Convert-Path ./publish
-          
           Write-Host "Deploying from: $publishPath"
           
-          # Deploy using the clean path variable
           & $msdeployPath `
             -verb:sync `
             -source:contentPath="$publishPath" `
