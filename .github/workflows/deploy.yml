@@ -99,18 +99,34 @@ jobs:
             exit 1
           }
 
+          $healthUrl = $env:HEALTHCHECK_URL.Trim()
+          $uri = $null
+          $isValidUri = [System.Uri]::TryCreate($healthUrl, [System.UriKind]::Absolute, [ref]$uri)
+          if (-not $isValidUri -or ($uri.Scheme -ne "https" -and $uri.Scheme -ne "http")) {
+            Write-Error "Invalid PRODUCTION_HEALTHCHECK_URL format. Use a full URL like https://api.example.com/health"
+            exit 1
+          }
+
           $maxAttempts = 6
           $delaySeconds = 10
 
           for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
             try {
-              $response = Invoke-WebRequest -Uri $env:HEALTHCHECK_URL -Method Get -TimeoutSec 30
-              if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 400) {
-                Write-Host "Smoke check passed with HTTP $($response.StatusCode) on attempt $attempt."
+              $response = Invoke-WebRequest -Uri $uri.AbsoluteUri -Method Get -TimeoutSec 30 -UseBasicParsing -ErrorAction Stop
+              if ($null -eq $response) {
+                throw "No response object received."
+              }
+
+              $statusCode = [int]$response.StatusCode
+              if ($statusCode -ge 200 -and $statusCode -lt 400) {
+                Write-Host "Smoke check passed with HTTP $statusCode on attempt $attempt."
                 exit 0
               }
+
+              Write-Host "Attempt $attempt returned HTTP $statusCode."
             } catch {
-              Write-Host "Attempt $attempt failed: $($_.Exception.Message)"
+              $errorMessage = if ($null -ne $_ -and $null -ne $_.Exception) { $_.Exception.Message } else { "Unknown error" }
+              Write-Host "Attempt $attempt failed: $errorMessage"
             }
 
             if ($attempt -lt $maxAttempts) {
@@ -118,5 +134,5 @@ jobs:
             }
           }
 
-          Write-Error "Smoke check failed after $maxAttempts attempts: $env:HEALTHCHECK_URL"
+          Write-Error "Smoke check failed after $maxAttempts attempts for endpoint $($uri.Host)$($uri.AbsolutePath)"
           exit 1
