@@ -10,8 +10,7 @@ public class DatabaseFixture : IAsyncLifetime
 
     public DatabaseFixture()
     {
-        _container = new PostgreSqlBuilder()
-            .WithImage("postgres:15")
+        _container = new PostgreSqlBuilder("postgres:15")
             .WithDatabase("oris_test")
             .Build();
     }
