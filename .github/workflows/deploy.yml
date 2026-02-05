@@ -1,0 +1,61 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches:
+      - main  # Deploy when code is pushed to main
+  workflow_dispatch:  # Allow manual deployment
+
+env:
+  DOTNET_VERSION: '10.0.x'
+  CONFIGURATION: Release
+
+jobs:
+  deploy:
+    name: Build and Deploy
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --configuration ${{ env.CONFIGURATION }} --no-restore
+
+      - name: Run tests
+        run: dotnet test --configuration ${{ env.CONFIGURATION }} --no-build --verbosity normal
+
+      - name: Publish
+        run: dotnet publish src/Oris.Api/Oris.Api.csproj --configuration ${{ env.CONFIGURATION }} --no-build --output ./publish
+
+      - name: Deploy to IIS via WebDeploy
+        shell: powershell
+        run: |
+          $publishSettings = @{
+            "ComputerName" = "${{ secrets.WEBDEPLOY_SERVER }}"
+            "Username" = "${{ secrets.WEBDEPLOY_USERNAME }}"
+            "Password" = "${{ secrets.WEBDEPLOY_PASSWORD }}"
+            "SiteName" = "${{ secrets.WEBDEPLOY_SITE_NAME }}"
+          }
+          
+          # Install Web Deploy if not present
+          if (-not (Get-Command msdeploy.exe -ErrorAction SilentlyContinue)) {
+            Write-Error "Web Deploy (msdeploy.exe) not found. Install Web Deploy on the runner."
+            exit 1
+          }
+          
+          # Deploy using msdeploy
+          & "C:\Program Files\IIS\Microsoft Web Deploy V3\msdeploy.exe" `
+            -verb:sync `
+            -source:contentPath="./publish" `
+            -dest:contentPath="${{ secrets.WEBDEPLOY_SITE_PATH }}",computerName="https://${{ secrets.WEBDEPLOY_SERVER }}/msdeploy.axd?site=${{ secrets.WEBDEPLOY_SITE_NAME }}",username="${{ secrets.WEBDEPLOY_USERNAME }}",password="${{ secrets.WEBDEPLOY_PASSWORD }}",authtype=Basic `
+            -allowUntrusted `
+            -enableRule:AppOffline
