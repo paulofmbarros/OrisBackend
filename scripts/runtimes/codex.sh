@@ -1,11 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Import Core Library
+source "$(dirname "$0")/../lib/agent_core.sh"
+
 CONTRACT_FILE="$1"
 shift
 USER_PROMPT="$*"
 
-FULL_PROMPT="$(cat "$CONTRACT_FILE")
+# 1. Contract Minification
+MINIFIED_CONTRACT=$(agent_core::minify_contract "$CONTRACT_FILE")
+
+# 2. Context Injection
+PROJECT_CONTEXT=$(agent_core::generate_context_skeleton)
+
+# Build Prompt
+FULL_PROMPT="$MINIFIED_CONTRACT
+
+---
+
+## Project Context
+$PROJECT_CONTEXT
 
 ---
 
@@ -23,4 +38,22 @@ MCP INSTRUCTIONS (mandatory):
 IMPORTANT: Stop after 'Proposed Plan'. Do not implement until I explicitly say: 'Proceed with implementation'.
 "
 
-codex "$FULL_PROMPT"
+# 3. Check Cache
+agent_core::check_cache "$FULL_PROMPT" || true
+
+# 4. Run Agent (Cache Miss)
+TEMP_LOG=$(mktemp)
+
+codex "$FULL_PROMPT" | tee "$TEMP_LOG"
+
+EXIT_CODE=${PIPESTATUS[0]}
+
+# 5. Save to Cache
+if [[ $EXIT_CODE -eq 0 ]]; then
+   # Codex output is saved, but session ID is not applicable for this CLI apparently
+   agent_core::save_cache "$FULL_PROMPT" "$TEMP_LOG" ""
+else
+   rm -f "$TEMP_LOG"
+fi
+
+exit $EXIT_CODE
