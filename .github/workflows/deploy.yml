@@ -2,6 +2,15 @@ name: Deploy to Production
 
 on:
   workflow_dispatch: # Allows manual trigger from the Actions tab
+    inputs:
+      ref:
+        description: 'Git ref to deploy (branch, tag, or SHA)'
+        required: false
+        default: 'main'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.ref || github.ref }}
+  cancel-in-progress: true
 
 env:
   DOTNET_VERSION: '10.0.x'
@@ -11,15 +20,24 @@ jobs:
   deploy:
     name: Build and Deploy
     runs-on: windows-latest
+    timeout-minutes: 30
+    environment: production
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
+          cache: true
+          cache-dependency-path: |
+            **/*.sln
+            **/*.csproj
+            **/packages.lock.json
 
       # MonsterASP requires Web Deploy, which isn't pre-installed on GitHub runners
       - name: Install Web Deploy
@@ -46,7 +64,7 @@ jobs:
 
       - name: Publish
         # We publish the specific WebApplication project to a local folder named 'publish'
-        run: dotnet publish "${{ env.PROJECT_PATH }}" --configuration ${{ env.CONFIGURATION }} --output ./publish
+        run: dotnet publish "${{ env.PROJECT_PATH }}" --configuration ${{ env.CONFIGURATION }} --output ./publish --no-build
 
       - name: Deploy to IIS via WebDeploy
         shell: powershell
@@ -70,3 +88,35 @@ jobs:
             -dest:contentPath="${{ secrets.WEBDEPLOY_SITE_NAME }}",computerName="https://${{ secrets.WEBDEPLOY_SERVER }}:8172/msdeploy.axd?site=${{ secrets.WEBDEPLOY_SITE_NAME }}",username="${{ secrets.WEBDEPLOY_USERNAME }}",password="${{ secrets.WEBDEPLOY_PASSWORD }}",authtype=Basic `
             -allowUntrusted `
             -enableRule:AppOffline
+
+      - name: Smoke check production endpoint
+        shell: powershell
+        env:
+          HEALTHCHECK_URL: ${{ secrets.PRODUCTION_HEALTHCHECK_URL }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:HEALTHCHECK_URL)) {
+            Write-Error "Missing secret: PRODUCTION_HEALTHCHECK_URL"
+            exit 1
+          }
+
+          $maxAttempts = 6
+          $delaySeconds = 10
+
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            try {
+              $response = Invoke-WebRequest -Uri $env:HEALTHCHECK_URL -Method Get -TimeoutSec 30
+              if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 400) {
+                Write-Host "Smoke check passed with HTTP $($response.StatusCode) on attempt $attempt."
+                exit 0
+              }
+            } catch {
+              Write-Host "Attempt $attempt failed: $($_.Exception.Message)"
+            }
+
+            if ($attempt -lt $maxAttempts) {
+              Start-Sleep -Seconds $delaySeconds
+            }
+          }
+
+          Write-Error "Smoke check failed after $maxAttempts attempts: $env:HEALTHCHECK_URL"
+          exit 1
