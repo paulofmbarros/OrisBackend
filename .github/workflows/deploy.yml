@@ -1,10 +1,7 @@
 name: Deploy to Production
 
 on:
-  # push:
-  #   branches:
-  #     - main
-  workflow_dispatch:      # Manual trigger only
+  workflow_dispatch:
 
 env:
   DOTNET_VERSION: '10.0.x'
@@ -24,42 +21,48 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
+      # 1. NEW STEP: Install the missing tool
+      - name: Install Web Deploy
+        shell: powershell
+        run: choco install webdeploy
+
       - name: Restore dependencies
-        # Target the solution file
         run: dotnet restore OrisBackend.sln
 
       - name: Build
-        # Target the solution file
         run: dotnet build OrisBackend.sln --configuration ${{ env.CONFIGURATION }} --no-restore
 
       - name: Run tests
-        # Target the solution file
         run: dotnet test OrisBackend.sln --configuration ${{ env.CONFIGURATION }} --no-build --verbosity normal
 
       - name: Publish
-        # CRITICAL FIX: Publish the solution file.
-        # This avoids the "Project file does not exist" error.
         run: dotnet publish OrisBackend.sln --configuration ${{ env.CONFIGURATION }} --output ./publish
 
       - name: Deploy to IIS via WebDeploy
         shell: powershell
         run: |
-          # ... (Your existing deployment script remains exactly the same) ...
-          $publishSettings = @{
-            "ComputerName" = "${{ secrets.WEBDEPLOY_SERVER }}"
-            "Username" = "${{ secrets.WEBDEPLOY_USERNAME }}"
-            "Password" = "${{ secrets.WEBDEPLOY_PASSWORD }}"
-            "SiteName" = "${{ secrets.WEBDEPLOY_SITE_NAME }}"
+          # 2. UPDATED SCRIPT: Dynamically find msdeploy
+          
+          # Try to find msdeploy in standard paths
+          $msdeployPath = "C:\Program Files\IIS\Microsoft Web Deploy V3\msdeploy.exe"
+          
+          if (-not (Test-Path $msdeployPath)) {
+              # Fallback: check if it's in the system PATH (installed by choco)
+              $command = Get-Command msdeploy.exe -ErrorAction SilentlyContinue
+              if ($command) {
+                  $msdeployPath = $command.Source
+              } else {
+                  Write-Error "CRITICAL: msdeploy.exe was not found in Program Files or PATH."
+                  exit 1
+              }
           }
           
-          if (-not (Get-Command msdeploy.exe -ErrorAction SilentlyContinue)) {
-            Write-Error "Web Deploy (msdeploy.exe) not found. Install Web Deploy on the runner."
-            exit 1
-          }
-          
-          & "C:\Program Files\IIS\Microsoft Web Deploy V3\msdeploy.exe" `
+          Write-Host "Using Web Deploy at: $msdeployPath"
+
+          # 3. Deploy
+          & $msdeployPath `
             -verb:sync `
-            -source:contentPath="./publish" `
+            -source:contentPath="$PWD/publish" `
             -dest:contentPath="${{ secrets.WEBDEPLOY_SITE_PATH }}",computerName="https://${{ secrets.WEBDEPLOY_SERVER }}/msdeploy.axd?site=${{ secrets.WEBDEPLOY_SITE_NAME }}",username="${{ secrets.WEBDEPLOY_USERNAME }}",password="${{ secrets.WEBDEPLOY_PASSWORD }}",authtype=Basic `
             -allowUntrusted `
             -enableRule:AppOffline
