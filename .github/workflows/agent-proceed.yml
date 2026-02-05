@@ -71,13 +71,50 @@ jobs:
             PROMPT=$(cat plan-artifact/prompt.txt)
             ROLE=$(cat plan-artifact/role.txt)
             RUNTIME=$(cat plan-artifact/runtime.txt)
+            
+            JIRA_KEY=""
+            if [ -f plan-artifact/jira_ticket.txt ]; then
+              JIRA_KEY=$(cat plan-artifact/jira_ticket.txt)
+            fi
           
             echo "PROMPT=$PROMPT" >> $GITHUB_OUTPUT
             echo "ROLE=$ROLE" >> $GITHUB_OUTPUT
             echo "RUNTIME=$RUNTIME" >> $GITHUB_OUTPUT
+            echo "JIRA_KEY=$JIRA_KEY" >> $GITHUB_OUTPUT
           else
             echo "No plan artifact found. Please trigger the plan workflow first."
             exit 1
+          fi
+
+      - name: Setup Branch
+        id: setup_branch
+        run: |
+          JIRA_KEY="${{ steps.plan_context.outputs.JIRA_KEY }}"
+          if [ -n "$JIRA_KEY" ]; then
+             # Convert to lowercase
+             KEY_LOWER=$(echo "$JIRA_KEY" | tr '[:upper:]' '[:lower:]')
+             BRANCH_NAME="feature/$KEY_LOWER"
+             
+             echo "Target Branch: $BRANCH_NAME"
+             echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_OUTPUT
+             
+             # Configure Git
+             git config --global user.name "github-actions[bot]"
+             git config --global user.email "github-actions[bot]@users.noreply.github.com"
+             
+             # Fetch origin
+             git fetch origin
+             
+             # Switch to branch
+             if git rev-parse --verify "origin/$BRANCH_NAME" >/dev/null 2>&1; then
+                echo "Branch exists remotely. Checking out..."
+                git checkout -B "$BRANCH_NAME" "origin/$BRANCH_NAME"
+             else
+                echo "Branch does not exist. Creating new..."
+                git checkout -b "$BRANCH_NAME"
+             fi
+          else
+             echo "No Jira ticket found. Staying on current branch."
           fi
 
       - name: Setup Node.js
@@ -182,6 +219,18 @@ jobs:
           rm -f "$OUTPUT_FILE" "$ERROR_FILE"
           
           exit $EXIT_CODE
+
+      - name: Commit and Push Changes
+        if: steps.setup_branch.outputs.BRANCH_NAME != ''
+        run: |
+           BRANCH_NAME="${{ steps.setup_branch.outputs.BRANCH_NAME }}"
+           git add .
+           if ! git diff --cached --quiet; then
+              git commit -m "feat: Implementation for ${{ steps.plan_context.outputs.JIRA_KEY }}"
+              git push origin "$BRANCH_NAME"
+           else
+              echo "No changes to commit."
+           fi
 
       - name: Display implementation output
         if: always()

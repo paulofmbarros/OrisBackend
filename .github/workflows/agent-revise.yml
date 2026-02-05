@@ -52,6 +52,7 @@ jobs:
             // Find the most recent plan comment
             let planRunId = null;
             let originalPrompt = null;
+            let jiraTicket = null;
             
             for (const comment of comments.data.reverse()) {
               const runIdMatch = comment.body.match(/Agent Plan Run ID: (\d+)/);
@@ -93,6 +94,10 @@ jobs:
                 if (fs.existsSync('original-plan/prompt.txt')) {
                   originalPrompt = fs.readFileSync('original-plan/prompt.txt', 'utf8').trim();
                 }
+                
+                if (fs.existsSync('original-plan/jira_ticket.txt')) {
+                  jiraTicket = fs.readFileSync('original-plan/jira_ticket.txt', 'utf8').trim();
+                }
             
                 execSync('rm -rf original-plan original-plan.zip');
               }
@@ -115,6 +120,7 @@ jobs:
             
                 if (jiraMatch) {
                   originalPrompt = `Work on Jira ticket ${jiraMatch[1]}`;
+                  if (!jiraTicket) jiraTicket = jiraMatch[1];
                 } else {
                   originalPrompt = 'Work on the requested task';
                 }
@@ -125,6 +131,7 @@ jobs:
             
             core.setOutput('plan_run_id', planRunId);
             core.setOutput('original_prompt', originalPrompt || 'Work on the requested task');
+            core.setOutput('jira_ticket', jiraTicket || '');
 
       - name: Download original plan artifact
         uses: dawidd6/action-download-artifact@v3
@@ -241,6 +248,7 @@ jobs:
           echo "gemini" > plan-artifact/runtime.txt
           echo "true" > plan-artifact/is-revision.txt
           echo "$REVISION_FEEDBACK" > plan-artifact/revision-feedback.txt
+          echo "${{ steps.find_plan.outputs.jira_ticket }}" > plan-artifact/jira_ticket.txt
           
           rm -f "$OUTPUT_FILE" "$ERROR_FILE"
           
