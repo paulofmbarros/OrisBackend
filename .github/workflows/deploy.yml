@@ -1,10 +1,10 @@
 name: Deploy to Production
 
 on:
-  push:
-    branches:
-      - main  # Deploy when code is pushed to main
-  workflow_dispatch:  # Allow manual deployment
+  # push:
+  #   branches:
+  #     - main
+  workflow_dispatch:
 
 env:
   DOTNET_VERSION: '10.0.x'
@@ -24,6 +24,10 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
+      # DEBUG STEP: This will list all .csproj files so you can verify the path
+      - name: Check file structure
+        run: Get-ChildItem -Recurse -Filter *.csproj
+
       - name: Restore dependencies
         run: dotnet restore
 
@@ -34,7 +38,9 @@ jobs:
         run: dotnet test --configuration ${{ env.CONFIGURATION }} --no-build --verbosity normal
 
       - name: Publish
-        run: dotnet publish src/Oris.Api/Oris.Api.csproj --configuration ${{ env.CONFIGURATION }} --no-build --output ./publish
+        # IMPORTANT: Ensure the path below matches what you see in the "Check file structure" log
+        # Removed --no-build to ensure a clean release artifact is generated
+        run: dotnet publish src/Oris.Api/Oris.Api.csproj --configuration ${{ env.CONFIGURATION }} --output ./publish
 
       - name: Deploy to IIS via WebDeploy
         shell: powershell
