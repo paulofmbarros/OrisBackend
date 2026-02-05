@@ -21,48 +21,67 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      # 1. NEW STEP: Install the missing tool
       - name: Install Web Deploy
         shell: powershell
         run: choco install webdeploy
 
+      # 1. DYNAMICALLY FIND THE PROJECT
+      # This fixes the "Project file does not exist" error by searching for it
+      - name: Find API Project
+        shell: powershell
+        run: |
+          $project = Get-ChildItem -Recurse -Filter "Oris.Api.csproj" | Select-Object -First 1
+          if (-not $project) {
+              Write-Error "Could not find 'Oris.Api.csproj' anywhere in the repository!"
+              exit 1
+          }
+          echo "PROJECT_PATH=$($project.FullName)" >> $env:GITHUB_ENV
+          Write-Host "Found API Project at: $($project.FullName)"
+
       - name: Restore dependencies
-        run: dotnet restore OrisBackend.sln
+        run: dotnet restore "${{ env.PROJECT_PATH }}"
 
       - name: Build
-        run: dotnet build OrisBackend.sln --configuration ${{ env.CONFIGURATION }} --no-restore
+        run: dotnet build "${{ env.PROJECT_PATH }}" --configuration ${{ env.CONFIGURATION }} --no-restore
 
       - name: Run tests
+        # We target the solution for tests to ensure we catch everything
         run: dotnet test OrisBackend.sln --configuration ${{ env.CONFIGURATION }} --no-build --verbosity normal
 
       - name: Publish
-        run: dotnet publish OrisBackend.sln --configuration ${{ env.CONFIGURATION }} --output ./publish
+        # We publish only the specific API project we found earlier
+        run: dotnet publish "${{ env.PROJECT_PATH }}" --configuration ${{ env.CONFIGURATION }} --output ./publish
+
+      # 2. DEBUG STEP: Verify the folder exists and is not empty
+      - name: Check Publish Output
+        shell: powershell
+        run: |
+          if (Test-Path ./publish) {
+              Get-ChildItem ./publish
+          } else {
+              Write-Error "The ./publish folder was not created!"
+              exit 1
+          }
 
       - name: Deploy to IIS via WebDeploy
         shell: powershell
         run: |
-          # 2. UPDATED SCRIPT: Dynamically find msdeploy
-          
-          # Try to find msdeploy in standard paths
+          # Dynamic msdeploy finding
           $msdeployPath = "C:\Program Files\IIS\Microsoft Web Deploy V3\msdeploy.exe"
-          
           if (-not (Test-Path $msdeployPath)) {
-              # Fallback: check if it's in the system PATH (installed by choco)
               $command = Get-Command msdeploy.exe -ErrorAction SilentlyContinue
-              if ($command) {
-                  $msdeployPath = $command.Source
-              } else {
-                  Write-Error "CRITICAL: msdeploy.exe was not found in Program Files or PATH."
-                  exit 1
-              }
+              if ($command) { $msdeployPath = $command.Source }
           }
-          
-          Write-Host "Using Web Deploy at: $msdeployPath"
 
-          # 3. Deploy
+          # 3. FIX THE PATHS (Convert to absolute Windows paths)
+          $publishPath = Convert-Path ./publish
+          
+          Write-Host "Deploying from: $publishPath"
+          
+          # Deploy using the clean path variable
           & $msdeployPath `
             -verb:sync `
-            -source:contentPath="$PWD/publish" `
+            -source:contentPath="$publishPath" `
             -dest:contentPath="${{ secrets.WEBDEPLOY_SITE_PATH }}",computerName="https://${{ secrets.WEBDEPLOY_SERVER }}/msdeploy.axd?site=${{ secrets.WEBDEPLOY_SITE_NAME }}",username="${{ secrets.WEBDEPLOY_USERNAME }}",password="${{ secrets.WEBDEPLOY_PASSWORD }}",authtype=Basic `
             -allowUntrusted `
             -enableRule:AppOffline
