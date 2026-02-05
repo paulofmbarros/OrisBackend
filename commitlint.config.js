@@ -1,7 +1,14 @@
 module.exports = {
     extends: ['@commitlint/config-conventional'],
+    parserPreset: {
+        parserOpts: {
+            // Defines what a "issue" looks like.
+            // Adjust 'OR-' to match your actual Jira project key (e.g. 'PROJ-')
+            issuePrefixes: ['OR-']
+        }
+    },
     rules: {
-        // You can add custom types here (e.g., 'chore', 'refactor', 'perf')
+        // 1. Enforce standard types
         'type-enum': [
             2,
             'always',
@@ -18,6 +25,11 @@ module.exports = {
                 'revert'    // Reverting a previous commit
             ],
         ],
-        'subject-case': [2, 'always', 'sentence-case'], // Optional: enforces sentence case
+        // 2. Enforce Sentence case (e.g. "Add login", not "add login")
+        'subject-case': [2, 'always', 'sentence-case'],
+
+        // 3. FORCE TICKET REFERENCE
+        // This rule says: "It is an error (2) to never have a reference."
+        'references-empty': [2, 'never'],
     },
 };
