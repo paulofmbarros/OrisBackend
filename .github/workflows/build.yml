@@ -13,7 +13,6 @@ env:
   CONFIGURATION: Release
 
 jobs:
-  # -- JOB 1: BUILD, TEST & SONARQUBE --
   build:
     name: Build and analyze
     runs-on: ubuntu-latest
@@ -33,25 +32,31 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Install Tools
+      - name: Install SonarScanner
         run: |
           mkdir -p ${{ runner.temp }}/scanner
           dotnet tool update dotnet-sonarscanner --tool-path ${{ runner.temp }}/scanner
+
+      - name: Restore dependencies
+        run: dotnet restore OrisBackend.sln
 
       - name: Build and analyze with SonarQube
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
-          # No Linux usa-versa $SONAR_TOKEN
+          # Adicionado /d:sonar.scanner.skipJreProvisioning=true para performance
           ${{ runner.temp }}/scanner/dotnet-sonarscanner begin \
             /k:"paulofmbarros_OrisBackend" \
             /o:"oris" \
             /d:sonar.token="$SONAR_TOKEN" \
             /d:sonar.cs.opencover.reportsPaths="**/coverage.opencover.xml" \
-            /d:sonar.host.url="https://sonarcloud.io"
+            /d:sonar.host.url="https://sonarcloud.io" \
+            /d:sonar.scanner.skipJreProvisioning=true
           
-          dotnet build OrisBackend.sln --no-restore --configuration ${{ env.CONFIGURATION }}
+          # REMOVIDO --no-restore para evitar o erro NETSDK1004
+          dotnet build OrisBackend.sln --configuration ${{ env.CONFIGURATION }}
           
+          # Testcontainers rodando no Docker nativo do Ubuntu
           dotnet test OrisBackend.sln --no-build --configuration ${{ env.CONFIGURATION }} \
             --collect:"XPlat Code Coverage" --logger trx --results-directory ./TestResults/ \
             -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover
@@ -67,7 +72,6 @@ jobs:
           name: web-app-package
           path: ./publish
 
-  # -- JOB 2: SECURITY ANALYSIS --
   codeql:
     name: CodeQL Security Analysis
     runs-on: ubuntu-latest
@@ -83,7 +87,6 @@ jobs:
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
 
-  # -- JOB 3: DEPLOY (Corrigido para evitar avisos de segurança no Windows) --
   deploy:
     name: Deploy to MonsterASP
     needs: build
@@ -99,14 +102,12 @@ jobs:
       - name: Deploy via WebDeploy
         shell: powershell
         env:
-          # Mapeando todos os segredos do deploy aqui
           SITE_NAME: ${{ secrets.WEBDEPLOY_SITE_NAME }}
           SERVER: ${{ secrets.WEBDEPLOY_SERVER }}
           USERNAME: ${{ secrets.WEBDEPLOY_USERNAME }}
           PASSWORD: ${{ secrets.WEBDEPLOY_PASSWORD }}
         run: |
           $publishPath = Resolve-Path ./publish
-          # No Windows/PowerShell usa-se $env:VAR_NAME para máxima segurança
           & "C:\Program Files\IIS\Microsoft Web Deploy V3\msdeploy.exe" `
             -verb:sync `
             -source:contentPath="$publishPath" `
