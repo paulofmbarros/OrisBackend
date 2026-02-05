@@ -2,6 +2,15 @@ name: Deploy to Production
 
 on:
   workflow_dispatch: # Allows manual trigger from the Actions tab
+    inputs:
+      ref:
+        description: 'Git ref to deploy (branch, tag, or SHA)'
+        required: false
+        default: 'main'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.ref || github.ref }}
+  cancel-in-progress: true
 
 env:
   DOTNET_VERSION: '10.0.x'
@@ -11,15 +20,24 @@ jobs:
   deploy:
     name: Build and Deploy
     runs-on: windows-latest
+    timeout-minutes: 30
+    environment: production
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
+          cache: true
+          cache-dependency-path: |
+            **/*.sln
+            **/*.csproj
+            **/packages.lock.json
 
       # MonsterASP requires Web Deploy, which isn't pre-installed on GitHub runners
       - name: Install Web Deploy
@@ -46,7 +64,7 @@ jobs:
 
       - name: Publish
         # We publish the specific WebApplication project to a local folder named 'publish'
-        run: dotnet publish "${{ env.PROJECT_PATH }}" --configuration ${{ env.CONFIGURATION }} --output ./publish
+        run: dotnet publish "${{ env.PROJECT_PATH }}" --configuration ${{ env.CONFIGURATION }} --output ./publish --no-build
 
       - name: Deploy to IIS via WebDeploy
         shell: powershell
