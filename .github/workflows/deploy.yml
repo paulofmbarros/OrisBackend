@@ -4,7 +4,7 @@ on:
   # push:
   #   branches:
   #     - main
-  workflow_dispatch:
+  workflow_dispatch:      # Manual trigger only
 
 env:
   DOTNET_VERSION: '10.0.x'
@@ -24,27 +24,27 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      # DEBUG STEP: This will list all .csproj files so you can verify the path
-      - name: Check file structure
-        run: Get-ChildItem -Recurse -Filter *.csproj
-
       - name: Restore dependencies
-        run: dotnet restore
+        # Target the solution file
+        run: dotnet restore OrisBackend.sln
 
       - name: Build
-        run: dotnet build --configuration ${{ env.CONFIGURATION }} --no-restore
+        # Target the solution file
+        run: dotnet build OrisBackend.sln --configuration ${{ env.CONFIGURATION }} --no-restore
 
       - name: Run tests
-        run: dotnet test --configuration ${{ env.CONFIGURATION }} --no-build --verbosity normal
+        # Target the solution file
+        run: dotnet test OrisBackend.sln --configuration ${{ env.CONFIGURATION }} --no-build --verbosity normal
 
       - name: Publish
-        # IMPORTANT: Ensure the path below matches what you see in the "Check file structure" log
-        # Removed --no-build to ensure a clean release artifact is generated
-        run: dotnet publish src/Oris.Api/Oris.Api.csproj --configuration ${{ env.CONFIGURATION }} --output ./publish
+        # CRITICAL FIX: Publish the solution file.
+        # This avoids the "Project file does not exist" error.
+        run: dotnet publish OrisBackend.sln --configuration ${{ env.CONFIGURATION }} --output ./publish
 
       - name: Deploy to IIS via WebDeploy
         shell: powershell
         run: |
+          # ... (Your existing deployment script remains exactly the same) ...
           $publishSettings = @{
             "ComputerName" = "${{ secrets.WEBDEPLOY_SERVER }}"
             "Username" = "${{ secrets.WEBDEPLOY_USERNAME }}"
@@ -52,13 +52,11 @@ jobs:
             "SiteName" = "${{ secrets.WEBDEPLOY_SITE_NAME }}"
           }
           
-          # Install Web Deploy if not present
           if (-not (Get-Command msdeploy.exe -ErrorAction SilentlyContinue)) {
             Write-Error "Web Deploy (msdeploy.exe) not found. Install Web Deploy on the runner."
             exit 1
           }
           
-          # Deploy using msdeploy
           & "C:\Program Files\IIS\Microsoft Web Deploy V3\msdeploy.exe" `
             -verb:sync `
             -source:contentPath="./publish" `
