@@ -134,9 +134,21 @@ agent_core::auto_validate_build() {
   local fix_callback_cmd="$1" # Function/Command to call to fix issues
   local max_retries="${2:-2}"
   
+  # Ensure dotnet is in the PATH or find it
+  local dotnet_cmd="/Users/paulofmbarros/.dotnet/dotnet"
+  if [[ ! -x "$dotnet_cmd" ]]; then
+    if command -v dotnet &> /dev/null; then
+      dotnet_cmd="dotnet"
+    elif [[ -f "/usr/local/share/dotnet/dotnet" ]]; then
+      dotnet_cmd="/usr/local/share/dotnet/dotnet"
+    else
+      dotnet_cmd="dotnet" # Fallback to default and hope for the best
+    fi
+  fi
+
   for ((i=1;i<=max_retries;i++)); do
     echo "Verifying build (Attempt $i/$max_retries)..." >&2
-    if BUILD_OUT=$(dotnet build 2>&1); then
+    if BUILD_OUT=$($dotnet_cmd build 2>&1); then
        echo "Build Verification Passed!" >&2
        return 0
     else
