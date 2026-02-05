@@ -4,8 +4,7 @@ on:
   workflow_dispatch:
 
 env:
-  # FIXED: Please double-check this is 8.0.x, NOT 10.0.x
-  DOTNET_VERSION: '10.0.x'
+  DOTNET_VERSION: '8.0.x' 
   CONFIGURATION: Release
 
 jobs:
@@ -26,17 +25,15 @@ jobs:
         shell: powershell
         run: choco install webdeploy
 
-      # DYNAMICALLY FIND THE PROJECT (Case-Insensitive Search)
+      # FIXED: Search for the ACTUAL filename found in your logs
       - name: Find API Project
         shell: powershell
         run: |
-          # Find any .csproj with 'Api' in the name (ignoring case), excluding Tests
-          $project = Get-ChildItem -Recurse -Filter "*Api*.csproj" | Where-Object { $_.Name -notmatch "Test" } | Select-Object -First 1
+          # We now know the exact name from your debug logs
+          $project = Get-ChildItem -Recurse -Filter "Oris.WebApplication.csproj" | Select-Object -First 1
           
           if (-not $project) {
-              Write-Host "Could not find *Api*.csproj. Listing ALL csproj files to debug:"
-              Get-ChildItem -Recurse -Filter "*.csproj" | ForEach-Object { Write-Host $_.FullName }
-              Write-Error "Deploy failed because no API project was found."
+              Write-Error "Could not find 'Oris.WebApplication.csproj'. Please verify the file exists."
               exit 1
           }
           
@@ -44,12 +41,17 @@ jobs:
           Write-Host "TARGETING PROJECT: $($project.FullName)"
 
       - name: Restore dependencies
+        # Restore the specific project we found
         run: dotnet restore "${{ env.PROJECT_PATH }}"
 
       - name: Build
         run: dotnet build "${{ env.PROJECT_PATH }}" --configuration ${{ env.CONFIGURATION }} --no-restore
 
+      # Note: We skip running tests here to speed up deploy, assuming build.yml already passed.
+      # If you want tests, you can add them back, targeting the solution.
+
       - name: Publish
+        # Publish specifically the WebApplication project
         run: dotnet publish "${{ env.PROJECT_PATH }}" --configuration ${{ env.CONFIGURATION }} --output ./publish
 
       - name: Deploy to IIS via WebDeploy
