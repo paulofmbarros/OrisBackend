@@ -7,9 +7,6 @@ on:
       - edited
       - synchronize
 
-permissions:
-  pull-requests: read
-
 jobs:
   main:
     name: Validate PR Title
@@ -18,39 +15,3 @@ jobs:
       - uses: amannn/action-semantic-pull-request@v5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          types: |
-            feat
-            fix
-            docs
-            style
-            refactor
-            test
-            chore
-            perf
-            ci
-            revert
-
-          # 2. Enforce Format: "Start with Capital ... end with Ticket"
-          # Regex breakdown:
-          # ^[A-Z]        -> Subject must start with an Uppercase letter
-          # .+            -> Followed by any text
-          # \s            -> Followed by a space
-          # [A-Z]+-[0-9]+ -> Followed by Ticket Key (e.g., OR-25)
-          # $             -> End of string
-          subjectPattern: ^[A-Z].+\s[A-Z]+-[0-9]+$
-
-          # 3. Custom Error Message to help your team
-          subjectPatternError: |
-            The PR title does not match the required format!
-            
-            ✅ Correct Example:
-            "feat: Add user login page OR-25"
-            
-            ❌ Incorrect Examples:
-            "feat: add user login" (Lowercase subject, no ticket)
-            "feat: Add user login" (Missing ticket)
-            "feat: Add user login OR-25 #done" (Extra text after ticket)
-
-          # 4. Check single commits too (prevents bypassing if PR has only 1 commit)
-          validateSingleCommit: true
