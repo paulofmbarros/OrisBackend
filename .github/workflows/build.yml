@@ -193,6 +193,8 @@ jobs:
       # -----------------------------
       - name: Generate build provenance
         uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: ./publish/**
 
       # -----------------------------
       # Workflow Summary
