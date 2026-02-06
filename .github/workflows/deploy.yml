@@ -30,7 +30,7 @@ jobs:
     timeout-minutes: 30
     environment:
       name: production
-      url: ${{ secrets.PRODUCTION_URL }}
+      url: ${{ vars.PRODUCTION_URL }}
 
     steps:
       # --------------------------------------------------
