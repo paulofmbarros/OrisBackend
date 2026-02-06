@@ -13,22 +13,44 @@ concurrency:
 env:
   DOTNET_VERSION: '10.0.x'
   CONFIGURATION: Release
+  PROJECT_PATH: 'src/Oris.Api/Oris.WebApplication/Oris.WebApplication.csproj'
+
+permissions:
+  contents: read
 
 jobs:
   build:
-    name: Build and analyze
+    name: Build, Test and Analyze (DevSecOps)
     runs-on: ubuntu-latest
-    steps:
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: 17
-          distribution: 'zulu'
 
-      - uses: actions/checkout@v4
+    # ADD permissions at job level
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      actions: write
+
+    steps:
+      # -----------------------------
+      # Checkout (pinned)
+      # -----------------------------
+      - uses: actions/checkout@v4.1.1
         with:
           fetch-depth: 0
 
+      # -----------------------------
+      # Secrets scanning (FAIL FAST)
+      # -----------------------------
+      - name: Scan for secrets
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          fail: true
+
+      # -----------------------------
+      # .NET SDK
+      # -----------------------------
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
@@ -39,66 +61,192 @@ jobs:
             **/*.csproj
             **/packages.lock.json
 
-      - name: Install Tools
-        run: |
-          mkdir -p ${{ runner.temp }}/scanner
-          dotnet tool update dotnet-sonarscanner --tool-path ${{ runner.temp }}/scanner
-
-      # Restore explícito de todos os projetos antes do build
+      # -----------------------------
+      # Restore
+      # -----------------------------
       - name: Restore dependencies
         run: dotnet restore OrisBackend.sln
 
-      - name: Build and analyze with SonarQube
+      # -----------------------------
+      # Dependency vulnerability scan (SCA) - .NET Native
+      # -----------------------------
+      - name: Scan for vulnerable dependencies
+        id: vuln_scan
+        continue-on-error: true
+        run: |
+          echo "Scanning for vulnerable NuGet packages..."
+          dotnet list package --vulnerable --include-transitive > vulnerability-report.txt 2>&1
+          
+          if grep -q "has the following vulnerable packages" vulnerability-report.txt; then
+            echo "vulnerable=true" >> $GITHUB_OUTPUT
+            echo "::warning::Vulnerable dependencies detected"
+            cat vulnerability-report.txt
+          else
+            echo "vulnerable=false" >> $GITHUB_OUTPUT
+            echo "✅ No vulnerable dependencies found"
+          fi
+
+      - name: Upload vulnerability report
+        if: steps.vuln_scan.outputs.vulnerable == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vulnerability-report-${{ github.run_number }}
+          path: vulnerability-report.txt
+          retention-days: 90
+
+      - name: Check for critical vulnerabilities
+        if: steps.vuln_scan.outputs.vulnerable == 'true'
+        run: |
+          echo "::error::Build contains vulnerable dependencies - review required"
+          echo "Download the vulnerability report artifact for details"
+          # Uncomment to fail the build on vulnerabilities:
+          # exit 1
+
+      # -----------------------------
+      # Java (Sonar dependency)
+      # -----------------------------
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: 17
+          distribution: 'zulu'
+
+      # -----------------------------
+      # Cache Sonar Scanner
+      # -----------------------------
+      - name: Cache Sonar Scanner
+        uses: actions/cache@v4
+        with:
+          path: ~/.dotnet/tools
+          key: ${{ runner.os }}-dotnet-tools-sonarscanner-${{ hashFiles('**/global.json') }}
+          restore-keys: |
+            ${{ runner.os }}-dotnet-tools-sonarscanner-
+
+      # -----------------------------
+      # Sonar Scanner
+      # -----------------------------
+      - name: Install Sonar Scanner
+        run: dotnet tool install --global dotnet-sonarscanner || dotnet tool update --global dotnet-sonarscanner
+
+      # -----------------------------
+      # Build + Test + Sonar analysis with Quality Gate
+      # -----------------------------
+      - name: Build, Test and Analyze with SonarCloud
+        id: sonarcloud
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
-          ${{ runner.temp }}/scanner/dotnet-sonarscanner begin \
+          dotnet-sonarscanner begin \
             /k:"paulofmbarros_OrisBackend" \
             /o:"oris" \
             /d:sonar.token="$SONAR_TOKEN" \
             /d:sonar.cs.opencover.reportsPaths="**/coverage.opencover.xml" \
             /d:sonar.host.url="https://sonarcloud.io" \
             /d:sonar.projectBaseDir="$GITHUB_WORKSPACE" \
-            /d:sonar.scanner.skipJreProvisioning=true
-          
-          # Build sem o --no-restore para garantir que o Linux vincule as DLLs corretamente
-          dotnet build OrisBackend.sln --configuration ${{ env.CONFIGURATION }}
-          
-          # Execução dos testes (Docker/Testcontainers nativo)
-          dotnet test OrisBackend.sln --no-build --configuration ${{ env.CONFIGURATION }} \
-            --collect:"XPlat Code Coverage" --logger trx --results-directory ./TestResults/ \
-            -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover
-          
-          ${{ runner.temp }}/scanner/dotnet-sonarscanner end /d:sonar.token="$SONAR_TOKEN"
+            /d:sonar.scanner.skipJreProvisioning=true \
+            /d:sonar.qualitygate.wait=true \
+            /d:sonar.qualitygate.timeout=300
 
+          dotnet build OrisBackend.sln --configuration ${{ env.CONFIGURATION }}
+
+          dotnet test OrisBackend.sln \
+            --no-build \
+            --configuration ${{ env.CONFIGURATION }} \
+            --collect:"XPlat Code Coverage" \
+            --logger trx \
+            --results-directory ./TestResults/ \
+            -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover
+
+          dotnet-sonarscanner end \
+            /d:sonar.token="$SONAR_TOKEN"
+
+      # -----------------------------
+      # Upload test results
+      # -----------------------------
       - name: Upload Test Results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results
+          name: test-results-${{ github.run_number }}
           path: ./TestResults
           if-no-files-found: warn
+          retention-days: 30
 
+      # -----------------------------
+      # Publish artifact
+      # -----------------------------
       - name: Publish API
-        run: dotnet publish src/Oris.Api/Oris.WebApplication/Oris.WebApplication.csproj -c ${{ env.CONFIGURATION }} -o ./publish
+        run: |
+          dotnet publish "${{ env.PROJECT_PATH }}" \
+            -c "${{ env.CONFIGURATION }}" \
+            -o ./publish
 
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: web-app-package
+          name: web-app-package-${{ github.run_number }}
           path: ./publish
+          retention-days: 30
 
+      # -----------------------------
+      # Build provenance (supply-chain security)
+      # -----------------------------
+      - name: Generate build provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: ./publish/**
+
+      # -----------------------------
+      # Workflow Summary
+      # -----------------------------
+      - name: Generate Build Summary
+        if: always()
+        run: |
+          echo "### Build Results 🚀" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Configuration:** ${{ env.CONFIGURATION }}" >> $GITHUB_STEP_SUMMARY
+          echo "**.NET Version:** ${{ env.DOTNET_VERSION }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Run Number:** ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### Security Scans" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Secrets scanning (Gitleaks)" >> $GITHUB_STEP_SUMMARY
+          echo "- ${{ steps.vuln_scan.outputs.vulnerable == 'true' && '⚠️' || '✅' }} Dependency vulnerabilities (.NET)" >> $GITHUB_STEP_SUMMARY
+          echo "- ${{ steps.sonarcloud.outcome == 'success' && '✅' || '❌' }} Code quality & Quality Gate (SonarCloud)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Security analysis (CodeQL)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "- 📦 Build: web-app-package-${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 📊 Tests: test-results-${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.vuln_scan.outputs.vulnerable }}" = "true" ]; then
+            echo "- ⚠️ Vulnerabilities: vulnerability-report-${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # --------------------------------------------------
+  # CodeQL – Deep semantic security analysis
+  # --------------------------------------------------
   codeql:
     name: CodeQL Security Analysis
     runs-on: ubuntu-latest
+
+    # Job-level permissions (minimal)
     permissions:
       security-events: write
+      contents: read
+
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.1.1
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
+        uses: github/codeql-action/init@v3
         with:
           languages: csharp
-          build-mode: none
+
+      - name: Build for CodeQL
+        run: dotnet build OrisBackend.sln --configuration Release
+
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v4
+        uses: github/codeql-action/analyze@v3

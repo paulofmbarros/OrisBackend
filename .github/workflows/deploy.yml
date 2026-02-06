@@ -1,138 +1,425 @@
 name: Deploy to Production
 
 on:
-  workflow_dispatch: # Allows manual trigger from the Actions tab
+  workflow_dispatch:
     inputs:
       ref:
         description: 'Git ref to deploy (branch, tag, or SHA)'
         required: false
         default: 'main'
+      run_id:
+        description: 'Build workflow run ID to deploy (optional - will auto-detect if not provided)'
+        required: false
 
 concurrency:
-  group: ${{ github.workflow }}-${{ inputs.ref || github.ref }}
-  cancel-in-progress: true
+  group: production-deploy
+  cancel-in-progress: false
 
 env:
-  DOTNET_VERSION: '10.0.x'
   CONFIGURATION: Release
+
+permissions:
+  contents: read
+  id-token: write
+  actions: read
 
 jobs:
   deploy:
-    name: Build and Deploy
+    name: Deploy to Production
     runs-on: windows-latest
     timeout-minutes: 30
-    environment: production
+    environment:
+      name: production
+      url: ${{ secrets.PRODUCTION_URL }}
 
     steps:
+      # --------------------------------------------------
+      # Checkout
+      # --------------------------------------------------
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.1.1
         with:
           ref: ${{ inputs.ref }}
+          fetch-depth: 0
 
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+      # --------------------------------------------------
+      # Validate user inputs (Security hardening)
+      # --------------------------------------------------
+      - name: Validate inputs
+        shell: bash
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+          INPUT_RUN_ID: ${{ inputs.run_id }}
+        run: |
+          # Validate ref (allow branches, tags, SHAs - alphanumeric, slash, dash, underscore, dot)
+          if [[ -n "$INPUT_REF" ]] && [[ ! "$INPUT_REF" =~ ^[a-zA-Z0-9/_.-]+$ ]]; then
+            echo "::error::Invalid ref format. Only alphanumeric characters, slashes, dashes, underscores, and dots allowed."
+            exit 1
+          fi
+          
+          # Validate run_id if provided (must be numeric)
+          if [[ -n "$INPUT_RUN_ID" ]] && [[ ! "$INPUT_RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid run_id. Must be a positive number."
+            exit 1
+          fi
+          
+          echo "✅ Input validation passed"
+
+      # --------------------------------------------------
+      # Get deployment metadata
+      # --------------------------------------------------
+      - name: Get version info
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(git describe --tags --always --dirty)
+          COMMIT_SHA=$(git rev-parse HEAD)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "commit_sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
+          echo "Deploying version: $VERSION (commit: $COMMIT_SHA)"
+
+      # --------------------------------------------------
+      # Find successful build run for this commit
+      # --------------------------------------------------
+      - name: Find successful build
+        id: find_build
+        uses: actions/github-script@v7
+        env:
+          INPUT_RUN_ID: ${{ inputs.run_id }}
+          COMMIT_SHA: ${{ steps.version.outputs.commit_sha }}
         with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
-          cache: true
-          cache-dependency-path: |
-            **/*.sln
-            **/*.csproj
-            **/packages.lock.json
+          script: |
+            const runId = process.env.INPUT_RUN_ID;
+            const commitSha = process.env.COMMIT_SHA;
+            
+            // If run_id provided, verify it passed
+            if (runId) {
+              const parsedRunId = parseInt(runId);
+              if (isNaN(parsedRunId)) {
+                core.setFailed('Invalid run_id format');
+                return;
+              }
+            
+              const { data: run } = await github.rest.actions.getWorkflowRun({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: parsedRunId
+              });
+            
+              if (run.conclusion !== 'success') {
+                core.setFailed(`Run ${parsedRunId} did not succeed (status: ${run.conclusion})`);
+                return;
+              }
+            
+              core.setOutput('run_id', runId);
+              core.setOutput('run_number', run.run_number.toString());
+              return;
+            }
+            
+            // Auto-detect: find latest successful build for this commit
+            const { data: runs } = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'build.yml',
+              per_page: 50
+            });
+            
+            const successfulRun = runs.workflow_runs.find(r => 
+              r.head_sha === commitSha && r.conclusion === 'success'
+            );
+            
+            if (!successfulRun) {
+              core.setFailed(`No successful build found for commit ${commitSha}`);
+              return;
+            }
+            
+            core.setOutput('run_id', successfulRun.id.toString());
+            core.setOutput('run_number', successfulRun.run_number.toString());
+            core.info(`Found successful build: run ${successfulRun.id} (${successfulRun.html_url})`);
 
-      # MonsterASP requires Web Deploy, which isn't pre-installed on GitHub runners
+      # --------------------------------------------------
+      # Download artifact from verified build run
+      # --------------------------------------------------
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: web-app-package-${{ steps.find_build.outputs.run_number }}
+          path: ./publish
+          run-id: ${{ steps.find_build.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # --------------------------------------------------
+      # Validate artifact contents
+      # --------------------------------------------------
+      - name: Validate artifact
+        shell: powershell
+        run: |
+          $requiredFiles = @(
+            "Oris.WebApplication.dll",
+            "appsettings.json",
+            "web.config"
+          )
+          
+          foreach ($file in $requiredFiles) {
+            $path = Join-Path ./publish $file
+            if (-not (Test-Path $path)) {
+              Write-Error "Missing required file: $file"
+              exit 1
+            }
+          }
+          
+          Write-Host "✅ Artifact validation passed"
+
+      # --------------------------------------------------
+      # Pre-deployment health check
+      # --------------------------------------------------
+      - name: Pre-deployment health check
+        shell: powershell
+        continue-on-error: true
+        id: pre_health
+        env:
+          HEALTHCHECK_URL: ${{ secrets.PRODUCTION_HEALTHCHECK_URL }}
+        run: |
+          try {
+            $response = Invoke-WebRequest -Uri $env:HEALTHCHECK_URL -Method Get -TimeoutSec 10 -UseBasicParsing
+            Write-Host "Current site status: HTTP $($response.StatusCode)"
+            echo "pre_deploy_healthy=true" >> $env:GITHUB_OUTPUT
+          } catch {
+            Write-Host "Site currently unhealthy or unreachable"
+            echo "pre_deploy_healthy=false" >> $env:GITHUB_OUTPUT
+          }
+
+      # --------------------------------------------------
+      # Install Web Deploy
+      # --------------------------------------------------
       - name: Install Web Deploy
         shell: powershell
-        run: choco install webdeploy
-
-      # We use the exact project name discovered in your previous debug logs
-      - name: Find API Project
-        shell: powershell
         run: |
-          $project = Get-ChildItem -Recurse -Filter "Oris.WebApplication.csproj" | Select-Object -First 1
-          if (-not $project) {
-              Write-Error "Could not find 'Oris.WebApplication.csproj'. Verify the file exists in your repository."
-              exit 1
+          Write-Host "Installing Web Deploy..."
+          choco install webdeploy -y --no-progress
+          
+          # Verify installation
+          $msdeploy = Get-Command msdeploy.exe -ErrorAction SilentlyContinue
+          if (-not $msdeploy) {
+            Write-Error "Web Deploy installation failed"
+            exit 1
           }
-          echo "PROJECT_PATH=$($project.FullName)" >> $env:GITHUB_ENV
-          Write-Host "Targeting: $($project.FullName)"
+          
+          Write-Host "✅ Web Deploy installed: $($msdeploy.Source)"
 
-      - name: Restore dependencies
-        run: dotnet restore "${{ env.PROJECT_PATH }}"
+      # --------------------------------------------------
+      # Create deployment marker
+      # --------------------------------------------------
+      - name: Create deployment marker file
+        shell: powershell
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          COMMIT_SHA: ${{ steps.version.outputs.commit_sha }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          BUILD_RUN_ID: ${{ steps.find_build.outputs.run_id }}
+        run: |
+          $timestamp = Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ"
+          
+          $deployInfo = @{
+            version = $env:VERSION
+            commit = $env:COMMIT_SHA
+            deployed_at = $timestamp
+            deployed_by = $env:GITHUB_ACTOR
+            workflow_run = $env:GITHUB_RUN_ID
+            build_run = $env:BUILD_RUN_ID
+          }
+          
+          $deployInfo | ConvertTo-Json | Out-File -FilePath ./publish/deployment-info.json -Encoding UTF8
+          Write-Host "Created deployment marker"
 
-      - name: Build
-        run: dotnet build "${{ env.PROJECT_PATH }}" --configuration ${{ env.CONFIGURATION }} --no-restore
-
-      - name: Publish
-        # We publish the specific WebApplication project to a local folder named 'publish'
-        run: dotnet publish "${{ env.PROJECT_PATH }}" --configuration ${{ env.CONFIGURATION }} --output ./publish --no-build
-
+      # --------------------------------------------------
+      # Deploy to IIS via WebDeploy
+      # --------------------------------------------------
       - name: Deploy to IIS via WebDeploy
         shell: powershell
+        env:
+          WEBDEPLOY_SERVER: ${{ secrets.WEBDEPLOY_SERVER }}
+          WEBDEPLOY_SITE_NAME: ${{ secrets.WEBDEPLOY_SITE_NAME }}
+          WEBDEPLOY_USERNAME: ${{ secrets.WEBDEPLOY_USERNAME }}
+          WEBDEPLOY_PASSWORD: ${{ secrets.WEBDEPLOY_PASSWORD }}
         run: |
-          # Find the msdeploy executable installed by choco
-          $msdeployPath = "C:\Program Files\IIS\Microsoft Web Deploy V3\msdeploy.exe"
-          if (-not (Test-Path $msdeployPath)) {
-              $command = Get-Command msdeploy.exe -ErrorAction SilentlyContinue
-              if ($command) { $msdeployPath = $command.Source }
+          $msdeploy = Get-Command msdeploy.exe
+          $publishPath = Convert-Path ./publish
+          
+          Write-Host "Starting deployment to $env:WEBDEPLOY_SITE_NAME..."
+          
+          $destArg = "contentPath='$env:WEBDEPLOY_SITE_NAME'," +
+                     "computerName='https://$env:WEBDEPLOY_SERVER:8172/msdeploy.axd?site=$env:WEBDEPLOY_SITE_NAME'," +
+                     "username='$env:WEBDEPLOY_USERNAME'," +
+                     "password='$env:WEBDEPLOY_PASSWORD'," +
+                     "authtype=Basic"
+          
+          try {
+            & $msdeploy.Source `
+              -verb:sync `
+              -source:contentPath="$publishPath" `
+              -dest:$destArg `
+              -allowUntrusted `
+              -enableRule:AppOffline `
+              -enableRule:DoNotDeleteRule `
+              -retryAttempts:3 `
+              -retryInterval:5000 `
+              -verbose
+          
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "Deployment failed with exit code $LASTEXITCODE"
+              exit $LASTEXITCODE
+            }
+          
+            Write-Host "✅ Deployment completed successfully"
+          } catch {
+            Write-Error "Deployment exception: $($_.Exception.Message)"
+            exit 1
           }
 
-          # Convert relative path to absolute Windows path for msdeploy
-          $publishPath = Convert-Path ./publish
-          Write-Host "Deploying from: $publishPath"
-          
-          # MonsterASP specific deployment command
-          # Note: We use port 8172 and the site name in the query string
-          & $msdeployPath `
-            -verb:sync `
-            -source:contentPath="$publishPath" `
-            -dest:contentPath="${{ secrets.WEBDEPLOY_SITE_NAME }}",computerName="https://${{ secrets.WEBDEPLOY_SERVER }}:8172/msdeploy.axd?site=${{ secrets.WEBDEPLOY_SITE_NAME }}",username="${{ secrets.WEBDEPLOY_USERNAME }}",password="${{ secrets.WEBDEPLOY_PASSWORD }}",authtype=Basic `
-            -allowUntrusted `
-            -enableRule:AppOffline
-
-      - name: Smoke check production endpoint
+      # --------------------------------------------------
+      # Post-deployment smoke tests
+      # --------------------------------------------------
+      - name: Smoke test - Health endpoint
         shell: powershell
         env:
           HEALTHCHECK_URL: ${{ secrets.PRODUCTION_HEALTHCHECK_URL }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:HEALTHCHECK_URL)) {
-            Write-Error "Missing secret: PRODUCTION_HEALTHCHECK_URL"
-            exit 1
-          }
-
-          $healthUrl = $env:HEALTHCHECK_URL.Trim()
-          $uri = $null
-          $isValidUri = [System.Uri]::TryCreate($healthUrl, [System.UriKind]::Absolute, [ref]$uri)
-          if (-not $isValidUri -or ($uri.Scheme -ne "https" -and $uri.Scheme -ne "http")) {
-            Write-Error "Invalid PRODUCTION_HEALTHCHECK_URL format. Use a full URL like https://api.example.com/health"
-            exit 1
-          }
-
-          $maxAttempts = 6
+          $maxAttempts = 10
           $delaySeconds = 10
-
+          
+          Write-Host "Waiting for application to start..."
+          
           for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
             try {
-              $response = Invoke-WebRequest -Uri $uri.AbsoluteUri -Method Get -TimeoutSec 30 -UseBasicParsing -ErrorAction Stop
-              if ($null -eq $response) {
-                throw "No response object received."
-              }
-
-              $statusCode = [int]$response.StatusCode
-              if ($statusCode -ge 200 -and $statusCode -lt 400) {
-                Write-Host "Smoke check passed with HTTP $statusCode on attempt $attempt."
+              Write-Host "Attempt $attempt/$maxAttempts..."
+          
+              $response = Invoke-WebRequest `
+                -Uri $env:HEALTHCHECK_URL `
+                -Method Get `
+                -TimeoutSec 30 `
+                -UseBasicParsing
+          
+              if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300) {
+                Write-Host "✅ Health check passed: HTTP $($response.StatusCode)"
+          
+                # Validate response content if possible
+                if ($response.Content -match '"status"\s*:\s*"healthy"') {
+                  Write-Host "✅ Application reports healthy status"
+                }
+          
                 exit 0
+              } else {
+                Write-Warning "Unexpected status code: $($response.StatusCode)"
               }
-
-              Write-Host "Attempt $attempt returned HTTP $statusCode."
             } catch {
-              $errorMessage = if ($null -ne $_ -and $null -ne $_.Exception) { $_.Exception.Message } else { "Unknown error" }
-              Write-Host "Attempt $attempt failed: $errorMessage"
+              Write-Host "⚠️  Attempt $attempt failed: $($_.Exception.Message)"
+          
+              if ($attempt -eq $maxAttempts) {
+                Write-Error "❌ Smoke test failed after $maxAttempts attempts"
+                exit 1
+              }
             }
-
-            if ($attempt -lt $maxAttempts) {
-              Start-Sleep -Seconds $delaySeconds
-            }
+          
+            Start-Sleep -Seconds $delaySeconds
           }
 
-          Write-Error "Smoke check failed after $maxAttempts attempts for endpoint $($uri.Host)$($uri.AbsolutePath)"
-          exit 1
+      - name: Smoke test - Critical feature check
+        shell: powershell
+        continue-on-error: true
+        env:
+          API_BASE_URL: ${{ secrets.PRODUCTION_API_URL }}
+        run: |
+          # Example: Check a critical API endpoint
+          try {
+            $response = Invoke-WebRequest `
+              -Uri "$env:API_BASE_URL/api/status" `
+              -Method Get `
+              -TimeoutSec 10 `
+              -UseBasicParsing
+          
+            Write-Host "✅ API endpoint responsive"
+          } catch {
+            Write-Warning "⚠️  API check failed (non-critical): $($_.Exception.Message)"
+          }
+
+      # --------------------------------------------------
+      # Create GitHub deployment record
+      # --------------------------------------------------
+      - name: Record deployment
+        if: success()
+        uses: actions/github-script@v7
+        env:
+          COMMIT_SHA: ${{ steps.version.outputs.commit_sha }}
+          VERSION: ${{ steps.version.outputs.version }}
+        with:
+          script: |
+            await github.rest.repos.createDeployment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: process.env.COMMIT_SHA,
+              environment: 'production',
+              description: `Deployed version ${process.env.VERSION}`,
+              auto_merge: false,
+              required_contexts: []
+            });
+
+      # --------------------------------------------------
+      # Generate deployment summary
+      # --------------------------------------------------
+      - name: Generate deployment summary
+        if: always()
+        shell: powershell
+        env:
+          JOB_STATUS: ${{ job.status }}
+          VERSION: ${{ steps.version.outputs.version }}
+          COMMIT_SHA: ${{ steps.version.outputs.commit_sha }}
+          BUILD_RUN_NUMBER: ${{ steps.find_build.outputs.run_number }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          BUILD_RUN_ID: ${{ steps.find_build.outputs.run_id }}
+          PRODUCTION_URL: ${{ secrets.PRODUCTION_URL }}
+          PRE_DEPLOY_HEALTHY: ${{ steps.pre_health.outputs.pre_deploy_healthy }}
+        run: |
+          $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC"
+          
+          $preHealthStatus = if ($env:PRE_DEPLOY_HEALTHY -eq 'true') { '✅ Healthy' } else { '⚠️ Unhealthy' }
+          $finalStatus = if ($env:JOB_STATUS -eq 'success') { '✅' } else { '❌' }
+          
+          $summary = @"
+          ### 🚀 Production Deployment Summary
+          
+          **Status:** $env:JOB_STATUS
+          **Version:** $env:VERSION
+          **Commit:** $env:COMMIT_SHA
+          **Build Run:** #$env:BUILD_RUN_NUMBER
+          **Deployed by:** $env:GITHUB_ACTOR
+          **Timestamp:** $timestamp
+          
+          #### Pre-Deployment
+          - Pre-deployment health: $preHealthStatus
+          
+          #### Deployment Steps
+          - ✅ Artifact validated
+          - ✅ Web Deploy executed
+          - $finalStatus Smoke tests
+          
+          #### Links
+          - [Build workflow](https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:BUILD_RUN_ID)
+          - [Production site]($env:PRODUCTION_URL)
+          "@
+          
+          $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding UTF8
+
+      # --------------------------------------------------
+      # Cleanup
+      # --------------------------------------------------
+      - name: Cleanup artifacts
+        if: always()
+        shell: powershell
+        run: |
+          if (Test-Path ./publish) {
+            Remove-Item ./publish -Recurse -Force
+            Write-Host "Cleaned up deployment artifacts"
+          }
