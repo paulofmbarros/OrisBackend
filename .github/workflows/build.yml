@@ -17,9 +17,6 @@ env:
 
 permissions:
   contents: read
-  security-events: write
-  id-token: write
-  # REMOVED: actions: read - moved to job level
 
 jobs:
   build:
@@ -29,9 +26,9 @@ jobs:
     # ADD permissions at job level
     permissions:
       contents: read
-      security-events: write
       id-token: write
-      actions: write  # Needed for artifact upload with provenance
+      attestations: write
+      actions: write
 
     steps:
       # -----------------------------
