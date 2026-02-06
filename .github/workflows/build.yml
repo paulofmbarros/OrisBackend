@@ -125,7 +125,7 @@ jobs:
         run: dotnet tool install --global dotnet-sonarscanner || dotnet tool update --global dotnet-sonarscanner
 
       # -----------------------------
-      # Build + Test + Sonar analysis
+      # Build + Test + Sonar analysis with Quality Gate
       # -----------------------------
       - name: Build, Test and Analyze with SonarCloud
         id: sonarcloud
@@ -139,7 +139,9 @@ jobs:
             /d:sonar.cs.opencover.reportsPaths="**/coverage.opencover.xml" \
             /d:sonar.host.url="https://sonarcloud.io" \
             /d:sonar.projectBaseDir="$GITHUB_WORKSPACE" \
-            /d:sonar.scanner.skipJreProvisioning=true
+            /d:sonar.scanner.skipJreProvisioning=true \
+            /d:sonar.qualitygate.wait=true \
+            /d:sonar.qualitygate.timeout=300
 
           dotnet build OrisBackend.sln --configuration ${{ env.CONFIGURATION }}
 
@@ -153,21 +155,6 @@ jobs:
 
           dotnet-sonarscanner end \
             /d:sonar.token="$SONAR_TOKEN"
-
-      # -----------------------------
-      # Sonar Quality Gate (ENFORCEMENT)
-      # -----------------------------
-      - name: SonarCloud Quality Gate
-        uses: sonarsource/sonarqube-quality-gate-action@v1.1.0
-        timeout-minutes: 5
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-
-      - name: Check Quality Gate Status
-        if: steps.sonarcloud.outcome == 'failure'
-        run: |
-          echo "::error::SonarCloud Quality Gate failed - build cannot proceed"
-          exit 1
 
       # -----------------------------
       # Upload test results
@@ -217,7 +204,7 @@ jobs:
           echo "#### Security Scans" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ Secrets scanning (Gitleaks)" >> $GITHUB_STEP_SUMMARY
           echo "- ${{ steps.vuln_scan.outputs.vulnerable == 'true' && '⚠️' || '✅' }} Dependency vulnerabilities (.NET)" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Code quality (SonarCloud)" >> $GITHUB_STEP_SUMMARY
+          echo "- ${{ steps.sonarcloud.outcome == 'success' && '✅' || '❌' }} Code quality & Quality Gate (SonarCloud)" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ Security analysis (CodeQL)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "#### Artifacts" >> $GITHUB_STEP_SUMMARY
