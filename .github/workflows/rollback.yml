@@ -31,12 +31,31 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4.1.1
 
+      - name: Validate run number
+        shell: bash
+        env:
+          RUN_NUMBER: ${{ inputs.run_number }}
+        run: |
+          # Validate that run_number is actually a number
+          if ! [[ "$RUN_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid run number. Must be a positive integer."
+            exit 1
+          fi
+          echo "Validated run number: $RUN_NUMBER"
+
       - name: Find build run
         id: find_build
         uses: actions/github-script@v7
+        env:
+          TARGET_RUN_NUMBER: ${{ inputs.run_number }}
         with:
           script: |
-            const targetRunNumber = parseInt('${{ inputs.run_number }}');
+            const targetRunNumber = parseInt(process.env.TARGET_RUN_NUMBER);
+            
+            if (isNaN(targetRunNumber) || targetRunNumber <= 0) {
+              core.setFailed('Invalid run number');
+              return;
+            }
             
             const { data: runs } = await github.rest.actions.listWorkflowRuns({
               owner: context.repo.owner,
@@ -59,6 +78,8 @@ jobs:
 
       - name: Download build artifact
         uses: actions/download-artifact@v4
+        env:
+          RUN_NUMBER: ${{ inputs.run_number }}
         with:
           name: web-app-package-${{ inputs.run_number }}
           path: ./publish
@@ -76,11 +97,12 @@ jobs:
           WEBDEPLOY_SITE_NAME: ${{ secrets.WEBDEPLOY_SITE_NAME }}
           WEBDEPLOY_USERNAME: ${{ secrets.WEBDEPLOY_USERNAME }}
           WEBDEPLOY_PASSWORD: ${{ secrets.WEBDEPLOY_PASSWORD }}
+          RUN_NUMBER: ${{ inputs.run_number }}
         run: |
           $msdeploy = Get-Command msdeploy.exe
           $publishPath = Convert-Path ./publish
           
-          Write-Host "⚠️  ROLLBACK: Deploying build #${{ inputs.run_number }}..."
+          Write-Host "⚠️  ROLLBACK: Deploying build #$env:RUN_NUMBER..."
           
           $destArg = "contentPath='$env:WEBDEPLOY_SITE_NAME'," +
                      "computerName='https://$env:WEBDEPLOY_SERVER:8172/msdeploy.axd?site=$env:WEBDEPLOY_SITE_NAME'," +
@@ -123,12 +145,19 @@ jobs:
       - name: Generate summary
         if: always()
         shell: powershell
+        env:
+          RUN_NUMBER: ${{ inputs.run_number }}
+          JOB_STATUS: ${{ job.status }}
+          GITHUB_ACTOR: ${{ github.actor }}
         run: |
-          @"
+          $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC"
+          $summary = @"
           ### ⏮️ Production Rollback Summary
           
-          **Status:** ${{ job.status }}
-          **Rolled back to:** Build #${{ inputs.run_number }}
-          **Executed by:** ${{ github.actor }}
-          **Timestamp:** $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")
-          "@ >> $env:GITHUB_STEP_SUMMARY
+          **Status:** $env:JOB_STATUS
+          **Rolled back to:** Build #$env:RUN_NUMBER
+          **Executed by:** $env:GITHUB_ACTOR
+          **Timestamp:** $timestamp
+          "@
+          
+          $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding UTF8

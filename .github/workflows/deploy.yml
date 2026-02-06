@@ -12,8 +12,8 @@ on:
         required: false
 
 concurrency:
-  group: production-deploy  # Simplified - only one production deploy at a time
-  cancel-in-progress: false  # Don't cancel production deploys!
+  group: production-deploy
+  cancel-in-progress: false
 
 env:
   CONFIGURATION: Release
@@ -21,7 +21,7 @@ env:
 permissions:
   contents: read
   id-token: write
-  actions: read  # Needed to download artifacts from other runs
+  actions: read
 
 jobs:
   deploy:
@@ -30,7 +30,7 @@ jobs:
     timeout-minutes: 30
     environment:
       name: production
-      url: ${{ secrets.PRODUCTION_URL }}  # Shows deployment URL in GitHub
+      url: ${{ secrets.PRODUCTION_URL }}
 
     steps:
       # --------------------------------------------------
@@ -40,7 +40,30 @@ jobs:
         uses: actions/checkout@v4.1.1
         with:
           ref: ${{ inputs.ref }}
-          fetch-depth: 0  # Need history for git describe
+          fetch-depth: 0
+
+      # --------------------------------------------------
+      # Validate user inputs (Security hardening)
+      # --------------------------------------------------
+      - name: Validate inputs
+        shell: bash
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+          INPUT_RUN_ID: ${{ inputs.run_id }}
+        run: |
+          # Validate ref (allow branches, tags, SHAs - alphanumeric, slash, dash, underscore, dot)
+          if [[ -n "$INPUT_REF" ]] && [[ ! "$INPUT_REF" =~ ^[a-zA-Z0-9/_.-]+$ ]]; then
+            echo "::error::Invalid ref format. Only alphanumeric characters, slashes, dashes, underscores, and dots allowed."
+            exit 1
+          fi
+          
+          # Validate run_id if provided (must be numeric)
+          if [[ -n "$INPUT_RUN_ID" ]] && [[ ! "$INPUT_RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid run_id. Must be a positive number."
+            exit 1
+          fi
+          
+          echo "✅ Input validation passed"
 
       # --------------------------------------------------
       # Get deployment metadata
@@ -61,26 +84,35 @@ jobs:
       - name: Find successful build
         id: find_build
         uses: actions/github-script@v7
+        env:
+          INPUT_RUN_ID: ${{ inputs.run_id }}
+          COMMIT_SHA: ${{ steps.version.outputs.commit_sha }}
         with:
           script: |
-            const runId = '${{ inputs.run_id }}';
-            const commitSha = '${{ steps.version.outputs.commit_sha }}';
+            const runId = process.env.INPUT_RUN_ID;
+            const commitSha = process.env.COMMIT_SHA;
             
             // If run_id provided, verify it passed
             if (runId) {
+              const parsedRunId = parseInt(runId);
+              if (isNaN(parsedRunId)) {
+                core.setFailed('Invalid run_id format');
+                return;
+              }
+            
               const { data: run } = await github.rest.actions.getWorkflowRun({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                run_id: parseInt(runId)
+                run_id: parsedRunId
               });
             
               if (run.conclusion !== 'success') {
-                core.setFailed(`Run ${runId} did not succeed (status: ${run.conclusion})`);
+                core.setFailed(`Run ${parsedRunId} did not succeed (status: ${run.conclusion})`);
                 return;
               }
             
               core.setOutput('run_id', runId);
-              core.setOutput('run_number', run.run_number);
+              core.setOutput('run_number', run.run_number.toString());
               return;
             }
             
@@ -143,7 +175,7 @@ jobs:
       # --------------------------------------------------
       - name: Pre-deployment health check
         shell: powershell
-        continue-on-error: true  # Site might be down, that's ok
+        continue-on-error: true
         id: pre_health
         env:
           HEALTHCHECK_URL: ${{ secrets.PRODUCTION_HEALTHCHECK_URL }}
@@ -180,14 +212,22 @@ jobs:
       # --------------------------------------------------
       - name: Create deployment marker file
         shell: powershell
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          COMMIT_SHA: ${{ steps.version.outputs.commit_sha }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          BUILD_RUN_ID: ${{ steps.find_build.outputs.run_id }}
         run: |
+          $timestamp = Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ"
+          
           $deployInfo = @{
-            version = "${{ steps.version.outputs.version }}"
-            commit = "${{ steps.version.outputs.commit_sha }}"
-            deployed_at = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ")
-            deployed_by = "${{ github.actor }}"
-            workflow_run = "${{ github.run_id }}"
-            build_run = "${{ steps.find_build.outputs.run_id }}"
+            version = $env:VERSION
+            commit = $env:COMMIT_SHA
+            deployed_at = $timestamp
+            deployed_by = $env:GITHUB_ACTOR
+            workflow_run = $env:GITHUB_RUN_ID
+            build_run = $env:BUILD_RUN_ID
           }
           
           $deployInfo | ConvertTo-Json | Out-File -FilePath ./publish/deployment-info.json -Encoding UTF8
@@ -287,7 +327,7 @@ jobs:
 
       - name: Smoke test - Critical feature check
         shell: powershell
-        continue-on-error: true  # Don't fail deployment, but warn
+        continue-on-error: true
         env:
           API_BASE_URL: ${{ secrets.PRODUCTION_API_URL }}
         run: |
@@ -310,14 +350,17 @@ jobs:
       - name: Record deployment
         if: success()
         uses: actions/github-script@v7
+        env:
+          COMMIT_SHA: ${{ steps.version.outputs.commit_sha }}
+          VERSION: ${{ steps.version.outputs.version }}
         with:
           script: |
             await github.rest.repos.createDeployment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              ref: '${{ steps.version.outputs.commit_sha }}',
+              ref: process.env.COMMIT_SHA,
               environment: 'production',
-              description: 'Deployed version ${{ steps.version.outputs.version }}',
+              description: `Deployed version ${process.env.VERSION}`,
               auto_merge: false,
               required_contexts: []
             });
@@ -328,31 +371,46 @@ jobs:
       - name: Generate deployment summary
         if: always()
         shell: powershell
+        env:
+          JOB_STATUS: ${{ job.status }}
+          VERSION: ${{ steps.version.outputs.version }}
+          COMMIT_SHA: ${{ steps.version.outputs.commit_sha }}
+          BUILD_RUN_NUMBER: ${{ steps.find_build.outputs.run_number }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          BUILD_RUN_ID: ${{ steps.find_build.outputs.run_id }}
+          PRODUCTION_URL: ${{ secrets.PRODUCTION_URL }}
+          PRE_DEPLOY_HEALTHY: ${{ steps.pre_health.outputs.pre_deploy_healthy }}
         run: |
+          $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC"
+          
+          $preHealthStatus = if ($env:PRE_DEPLOY_HEALTHY -eq 'true') { '✅ Healthy' } else { '⚠️ Unhealthy' }
+          $finalStatus = if ($env:JOB_STATUS -eq 'success') { '✅' } else { '❌' }
+          
           $summary = @"
           ### 🚀 Production Deployment Summary
           
-          **Status:** ${{ job.status }}
-          **Version:** ${{ steps.version.outputs.version }}
-          **Commit:** ${{ steps.version.outputs.commit_sha }}
-          **Build Run:** #${{ steps.find_build.outputs.run_number }}
-          **Deployed by:** ${{ github.actor }}
-          **Timestamp:** $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")
+          **Status:** $env:JOB_STATUS
+          **Version:** $env:VERSION
+          **Commit:** $env:COMMIT_SHA
+          **Build Run:** #$env:BUILD_RUN_NUMBER
+          **Deployed by:** $env:GITHUB_ACTOR
+          **Timestamp:** $timestamp
           
           #### Pre-Deployment
-          - Pre-deployment health: ${{ steps.pre_health.outputs.pre_deploy_healthy == 'true' && '✅ Healthy' || '⚠️ Unhealthy' }}
+          - Pre-deployment health: $preHealthStatus
           
           #### Deployment Steps
           - ✅ Artifact validated
           - ✅ Web Deploy executed
-          - ${{ job.status == 'success' && '✅' || '❌' }} Smoke tests
+          - $finalStatus Smoke tests
           
           #### Links
-          - [Build workflow](https://github.com/${{ github.repository }}/actions/runs/${{ steps.find_build.outputs.run_id }})
-          - [Production site](${{ secrets.PRODUCTION_URL }})
+          - [Build workflow](https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:BUILD_RUN_ID)
+          - [Production site]($env:PRODUCTION_URL)
           "@
           
-          echo $summary >> $env:GITHUB_STEP_SUMMARY
+          $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding UTF8
 
       # --------------------------------------------------
       # Cleanup
