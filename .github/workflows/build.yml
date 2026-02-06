@@ -19,12 +19,19 @@ permissions:
   contents: read
   security-events: write
   id-token: write
-  actions: read
+  # REMOVED: actions: read - moved to job level
 
 jobs:
   build:
     name: Build, Test and Analyze (DevSecOps)
     runs-on: ubuntu-latest
+
+    # ADD permissions at job level
+    permissions:
+      contents: read
+      security-events: write
+      id-token: write
+      actions: write  # Needed for artifact upload with provenance
 
     steps:
       # -----------------------------
@@ -220,8 +227,11 @@ jobs:
   codeql:
     name: CodeQL Security Analysis
     runs-on: ubuntu-latest
+
+    # Job-level permissions (minimal)
     permissions:
       security-events: write
+      contents: read
 
     steps:
       - uses: actions/checkout@v4.1.1
