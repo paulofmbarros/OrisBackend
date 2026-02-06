@@ -6,12 +6,14 @@ Documenting the Gemini/`oris-be` workflow keeps planning, revisions, implementat
 ### Plan
 - run `oris-be --runtime gemini "Plan the implementation for OR-123"` to generate the proposed plan using `agent-contracts/backend.md`.  
 - the output is cached under `/tmp/state/active_plan.md`; nothing else executes until you explicitly request implementation.
+- `active_plan.md` is now sanitized before reuse (ANSI/CLI noise stripped, latest `Proposed Plan` section extracted, capped by `AGENT_ACTIVE_PLAN_MAX_CHARS`, default `20000`).
 - planning runs are verbose by default and write traces to `/tmp/state/planning_debug.log`; control with `AGENT_GEMINI_VERBOSE`, `AGENT_GEMINI_PLANNING_VERBOSE`, and `AGENT_GEMINI_PLANNING_LOG_FILE`.
 - planning uses read-only approval mode `default` by default; override with `AGENT_GEMINI_READ_ONLY_APPROVAL_MODE` (use `plan` only if your Gemini CLI has `experimental.plan` enabled).
 - each Gemini model attempt can use a timeout; it is disabled by default (`0` = no timeout). Heartbeat logs still emit every 30s; control with `AGENT_GEMINI_ATTEMPT_TIMEOUT_SECONDS`.
 - interactive mode is available for all phases: `AGENT_GEMINI_INTERACTIVE_MODE=always|fallback|never` (default `never`); use `fallback` if you want Gemini CLI to open interactively when non-interactive execution fails.
 - planning output is validated before publish; only responses with a real `Proposed Plan` are cached/published to `/tmp/state/active_plan.md` (placeholder/ask-for-ticket responses are rejected).
 - optional interactive model override: `AGENT_GEMINI_INTERACTIVE_MODEL` (if empty, Gemini CLI default model selection is used).
+- prompt profile optimization: planning keeps the full backend contract; implementation/review use a compact execution contract plus the approved plan context.
 
 ### Revise
 - to adjust an existing plan, issue another `oris-be --runtime gemini` command that references the ticket setup or the cached file (for example, `oris-be --runtime gemini "Update the OR-123 plan with retry logic"`).  
@@ -29,12 +31,18 @@ Documenting the Gemini/`oris-be` workflow keeps planning, revisions, implementat
 - rerun the runtime with `oris-be --runtime gemini "Review the code"` or set `AGENT_REVIEW=true` so the review instructions in the contract execute against the latest implementation.  
 - the agent runs the cached plan, focuses on regressions/fixes, and logs progress to `/tmp/state/review_checks.log`.
 - review runs are verbose by default and write traces to `/tmp/state/review_debug.log`; control with `AGENT_GEMINI_REVIEW_VERBOSE` and `AGENT_GEMINI_REVIEW_LOG_FILE`.
-- after a successful review, the runtime now posts a Jira comment using the "Implementation Complete" template for the resolved ticket and writes details to `/tmp/state/jira_review_update.log`.
-- after a successful review, the runtime performs automatic temp cleanup by default (clears `/tmp/cache/*`, `/tmp/state/active_plan.md`, and `/tmp/state/active_ticket.txt`; it also removes runtime temp logs unless configured otherwise).
+- Sonar and Jira post-review automation are now gated by mode settings (`auto|always|never`), with `auto` as default.
+- Sonar/Jira auxiliary calls now use resume-aware policy (`AGENT_GEMINI_AUX_RESUME_POLICY=auto|always|never`) and skip `--resume latest` when state/sessions are unavailable or stale (`AGENT_GEMINI_AUX_RESUME_MAX_AGE_SECONDS`, default `14400`).
+- Sonar/Jira outputs are cached under `/tmp/cache/review_aux` using ticket + commit + relevant context hashes to avoid repeat calls when state is unchanged.
+- Jira comment generation now uses compact summaries instead of large log tails to reduce prompt size.
+- after a successful review, the runtime performs automatic temp cleanup by default (clears `/tmp/state/active_plan.md` and `/tmp/state/active_ticket.txt`; runtime temp logs are removed unless configured otherwise).
 - controls:
   - `AGENT_GEMINI_POST_REVIEW_JIRA_COMMENT=true|false` (default `true`)
   - `AGENT_GEMINI_REQUIRE_REVIEW_JIRA_COMMENT=true|false` (default `true`, review exits non-zero if comment cannot be posted)
   - `AGENT_GEMINI_REVIEW_CLEANUP_ON_SUCCESS=true|false` (default `true`)
   - `AGENT_GEMINI_REVIEW_CLEANUP_REMOVE_LOGS=true|false` (default `true`)
+  - `AGENT_GEMINI_REVIEW_CLEANUP_REMOVE_CACHE=true|false` (default `false`)
+  - `AGENT_GEMINI_SONAR_REVIEW_MODE=auto|always|never` (default `auto`)
+  - `AGENT_GEMINI_JIRA_REVIEW_MODE=auto|always|never` (default `auto`)
 
 Consistency tip: every `oris-be --runtime gemini` call routes through `scripts/agent.sh`, so any prompt that includes a Jira key automatically updates the branch state files if you keep a steady plan → proceed → review cadence.
