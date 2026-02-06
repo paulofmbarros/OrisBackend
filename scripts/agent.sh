@@ -25,6 +25,11 @@ fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONTRACT_FILE="$REPO_ROOT/agent-contracts/${ROLE}.md"
+STATE_DIR="$REPO_ROOT/tmp/state"
+ACTIVE_TICKET_FILE="$STATE_DIR/active_ticket.txt"
+ACTIVE_PLAN_FILE="$STATE_DIR/active_plan.md"
+
+mkdir -p "$STATE_DIR"
 
 if [[ ! -f "$CONTRACT_FILE" ]]; then
   echo "Missing contract: $CONTRACT_FILE" >&2
@@ -43,8 +48,37 @@ fi
 # ==============================================================================
 # Extracts Jira Ticket (e.g., OR-25) and manages feature branch if in implementation mode.
 
-# 1. Extract Ticket ID
-TICKET_ID=$(echo "$PROMPT" | grep -oE "\b[A-Z]+-[0-9]+\b" | head -1 || true)
+extract_ticket_id() {
+  local content="$1"
+  echo "$content" | grep -oE "\b[A-Z]+-[0-9]+\b" | head -1 || true
+}
+
+resolve_ticket_id_for_implementation() {
+  local prompt_ticket="$1"
+  if [[ -n "$prompt_ticket" ]]; then
+    echo "$prompt_ticket"
+    return 0
+  fi
+
+  if [[ -f "$ACTIVE_TICKET_FILE" ]]; then
+    local state_ticket
+    state_ticket="$(cat "$ACTIVE_TICKET_FILE" 2>/dev/null || true)"
+    if [[ "$state_ticket" =~ ^[A-Z]+-[0-9]+$ ]]; then
+      echo "$state_ticket"
+      return 0
+    fi
+  fi
+
+  if [[ -f "$ACTIVE_PLAN_FILE" ]]; then
+    extract_ticket_id "$(cat "$ACTIVE_PLAN_FILE")"
+    return 0
+  fi
+
+  echo ""
+}
+
+# 1. Extract Ticket ID from the current prompt
+TICKET_ID="$(extract_ticket_id "$PROMPT")"
 
 # 2. Check for Implementation Mode
 #    Triggered by AGENT_PROCEED env var OR "proceed" keyword in prompt
@@ -55,7 +89,24 @@ elif echo "$PROMPT" | grep -qi "proceed"; then
   IS_IMPLEMENTATION=true
 fi
 
-if [[ -n "$TICKET_ID" ]] && [[ "$IS_IMPLEMENTATION" == "true" ]]; then
+# Persist ticket context during planning/non-implementation calls.
+if [[ "$IS_IMPLEMENTATION" != "true" ]] && [[ -n "$TICKET_ID" ]]; then
+  echo "$TICKET_ID" > "$ACTIVE_TICKET_FILE"
+fi
+
+if [[ "$IS_IMPLEMENTATION" == "true" ]]; then
+  TICKET_ID="$(resolve_ticket_id_for_implementation "$TICKET_ID")"
+
+  if [[ -z "$TICKET_ID" ]]; then
+    echo "⚠️  Auto-Branching: Implementation mode detected, but no ticket ID was found in prompt or state."
+    echo "   Continuing on current branch."
+    bash "$RUNTIME_SCRIPT" "$CONTRACT_FILE" "$PROMPT"
+    exit $?
+  fi
+
+  # Keep the latest resolved ticket for subsequent proceed calls.
+  echo "$TICKET_ID" > "$ACTIVE_TICKET_FILE"
+
   # Convert to lowercase for branch name
   BRANCH_NAME="feature/$(echo "$TICKET_ID" | tr '[:upper:]' '[:lower:]')"
   
