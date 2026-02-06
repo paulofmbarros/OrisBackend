@@ -176,9 +176,10 @@ jobs:
       # Publish artifact
       # -----------------------------
       - name: Publish API
-        run: dotnet publish ${{ env.PROJECT_PATH }} \
-          -c ${{ env.CONFIGURATION }} \
-          -o ./publish
+        run: |
+          dotnet publish "${{ env.PROJECT_PATH }}" \
+            -c "${{ env.CONFIGURATION }}" \
+            -o ./publish
 
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
