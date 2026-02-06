@@ -30,7 +30,6 @@ jobs:
     timeout-minutes: 30
     environment:
       name: production
-      url: ${{ vars.PRODUCTION_URL }}
 
     steps:
       # --------------------------------------------------
@@ -285,11 +284,55 @@ jobs:
             }
           }
           $publishPath = Convert-Path ./publish
+
+          $requiredVars = @(
+            "WEBDEPLOY_SERVER",
+            "WEBDEPLOY_SITE_NAME",
+            "WEBDEPLOY_USERNAME",
+            "WEBDEPLOY_PASSWORD"
+          )
+          foreach ($varName in $requiredVars) {
+            $value = (Get-Item "env:$varName" -ErrorAction SilentlyContinue).Value
+            if ([string]::IsNullOrWhiteSpace($value)) {
+              Write-Error "Missing required secret: $varName"
+              exit 1
+            }
+          }
+
+          $serverInput = $env:WEBDEPLOY_SERVER.Trim()
+          $serverInput = $serverInput -replace '/+$', ''
+          $serverHost = $null
+          $serverPort = 8172
+
+          if ($serverInput -match '^https?://') {
+            $serverUri = [System.Uri]$serverInput
+            $serverHost = $serverUri.Host
+            if ($serverUri.Port -gt 0) { $serverPort = $serverUri.Port }
+          } else {
+            if ($serverInput.Contains('/')) {
+              Write-Error "WEBDEPLOY_SERVER must be a host (optionally with port), not a path."
+              exit 1
+            }
+
+            if ($serverInput -match '^(?<host>[^:]+):(?<port>\d+)$') {
+              $serverHost = $Matches.host
+              $serverPort = [int]$Matches.port
+            } else {
+              $serverHost = $serverInput
+            }
+          }
+
+          if ([string]::IsNullOrWhiteSpace($serverHost)) {
+            Write-Error "WEBDEPLOY_SERVER is empty or invalid."
+            exit 1
+          }
+
+          $computerName = "https://$serverHost`:$serverPort/msdeploy.axd?site=$($env:WEBDEPLOY_SITE_NAME)"
           
           Write-Host "Starting deployment to $env:WEBDEPLOY_SITE_NAME..."
           
           $destArg = "contentPath='$env:WEBDEPLOY_SITE_NAME'," +
-                     "computerName='https://$env:WEBDEPLOY_SERVER:8172/msdeploy.axd?site=$env:WEBDEPLOY_SITE_NAME'," +
+                     "computerName='$computerName'," +
                      "username='$env:WEBDEPLOY_USERNAME'," +
                      "password='$env:WEBDEPLOY_PASSWORD'," +
                      "authtype=Basic"
