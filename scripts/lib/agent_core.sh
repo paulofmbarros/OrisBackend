@@ -48,6 +48,13 @@ agent_core::generate_context_skeleton() {
 # 2. Caching Implementation
 # ==============================================================================
 
+agent_core::is_invalid_cached_output() {
+  local file="$1"
+  grep -Eqi \
+    "Request cancelled|I am ready for your first command|Understood\\. I am ready for your first command\\.|ready for your first command|I need the details of the Jira ticket|Please provide the Objective, Scope, Acceptance Criteria" \
+    "$file" || [[ ! -s "$file" ]]
+}
+
 # Publishes a plan to the shared state for implementations to pick up
 agent_core::publish_to_state() {
   local content_file="$1"
@@ -72,7 +79,7 @@ agent_core::check_cache() {
 
   if [[ -f "$cache_log" ]] && [[ -f "$cache_sid" ]]; then
     # Self-healing: Check for corruption
-    if grep -Fq "Request cancelled" "$cache_log" || [[ ! -s "$cache_log" ]]; then
+    if agent_core::is_invalid_cached_output "$cache_log"; then
       echo "Corrupted cache detected. Invalidating..." >&2
       rm -f "$cache_log" "$cache_sid"
       return 1 # Cache Miss
@@ -105,16 +112,11 @@ agent_core::save_cache() {
   local cache_sid="$CACHE_DIR/$cache_key.sid"
   
   # Validate before caching
-  if grep -Fq "Request cancelled" "$output_file"; then
-     echo "Detected cancellation. Not caching." >&2
+  if agent_core::is_invalid_cached_output "$output_file"; then
+     echo "Detected invalid output. Not caching." >&2
      return 1
   fi
   
-  if [[ ! -s "$output_file" ]]; then
-     echo "Output empty. Not caching." >&2
-     return 1
-  fi
-
   mv "$output_file" "$cache_log"
   if [[ -n "$session_id" ]]; then
     echo "$session_id" > "$cache_sid"

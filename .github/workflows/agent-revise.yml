@@ -21,8 +21,12 @@ jobs:
 
       - name: Extract revision feedback
         id: extract_revision
+        env:
+          COMMENT_BODY_VAL: ${{ github.event.comment.body }}
+          ISSUE_NUMBER_VAL: ${{ github.event.issue.number }}
+          PR_NUMBER_VAL: ${{ github.event.pull_request.number }}
         run: |
-          COMMENT_BODY="${{ github.event.comment.body }}"
+          COMMENT_BODY="$COMMENT_BODY_VAL"
           REVISION_FEEDBACK=$(echo "$COMMENT_BODY" | sed -E 's|^\s*/revise\s+||')
           
           if [ -z "$REVISION_FEEDBACK" ]; then
@@ -35,7 +39,12 @@ jobs:
           echo "$REVISION_FEEDBACK" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
           
-          echo "ISSUE_NUMBER=${{ github.event.issue.number || github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+          # Use either issue number or PR number
+          ISSUE_NUMBER="$ISSUE_NUMBER_VAL"
+          if [ -z "$ISSUE_NUMBER" ]; then
+            ISSUE_NUMBER="$PR_NUMBER_VAL"
+          fi
+          echo "ISSUE_NUMBER=$ISSUE_NUMBER" >> $GITHUB_OUTPUT
 
       - name: Find original plan
         id: find_plan
@@ -211,14 +220,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ORIGINAL_PROMPT: ${{ steps.find_plan.outputs.original_prompt }}
+          REVISION_FEEDBACK: ${{ steps.extract_revision.outputs.REVISION_FEEDBACK }}
+          JIRA_TICKET: ${{ steps.find_plan.outputs.jira_ticket }}
         run: |
           set +e
           
           OUTPUT_FILE=$(mktemp)
           ERROR_FILE=$(mktemp)
-          
-          ORIGINAL_PROMPT="${{ steps.find_plan.outputs.original_prompt }}"
-          REVISION_FEEDBACK="${{ steps.extract_revision.outputs.REVISION_FEEDBACK }}"
           
           # Build enhanced prompt with revision feedback
           ENHANCED_PROMPT="$ORIGINAL_PROMPT"$'\n\n'"REVISION REQUEST:"$'\n'"The previous plan needs to be revised based on the following feedback:"$'\n'"$REVISION_FEEDBACK"$'\n\n'"Please generate a revised plan that addresses this feedback while maintaining alignment with the original requirements."
@@ -248,7 +257,7 @@ jobs:
           echo "gemini" > plan-artifact/runtime.txt
           echo "true" > plan-artifact/is-revision.txt
           echo "$REVISION_FEEDBACK" > plan-artifact/revision-feedback.txt
-          echo "${{ steps.find_plan.outputs.jira_ticket }}" > plan-artifact/jira_ticket.txt
+          echo "$JIRA_TICKET" > plan-artifact/jira_ticket.txt
           
           rm -f "$OUTPUT_FILE" "$ERROR_FILE"
           

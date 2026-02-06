@@ -51,6 +51,7 @@ fi
 extract_ticket_id() {
   local content="$1"
   echo "$content" | grep -oE "\b[A-Z]+-[0-9]+\b" | head -1 || true
+  return 0
 }
 
 resolve_ticket_id_for_implementation() {
@@ -79,6 +80,7 @@ resolve_ticket_id_for_implementation() {
 
 # 1. Extract Ticket ID from the current prompt
 TICKET_ID="$(extract_ticket_id "$PROMPT")"
+RUNTIME_PROMPT="$PROMPT"
 
 # 2. Check for Implementation Mode
 #    Triggered by AGENT_PROCEED env var OR "proceed" keyword in prompt
@@ -107,6 +109,12 @@ if [[ "$IS_IMPLEMENTATION" == "true" ]]; then
   # Keep the latest resolved ticket for subsequent proceed calls.
   echo "$TICKET_ID" > "$ACTIVE_TICKET_FILE"
 
+  # Make implementation prompts explicit about ticket scope when user says only
+  # "Proceed with implementation".
+  if ! echo "$RUNTIME_PROMPT" | grep -qE "\b[A-Z]+-[0-9]+\b"; then
+    RUNTIME_PROMPT="$RUNTIME_PROMPT (Ticket: $TICKET_ID)"
+  fi
+
   # Convert to lowercase for branch name
   BRANCH_NAME="feature/$(echo "$TICKET_ID" | tr '[:upper:]' '[:lower:]')"
   
@@ -134,4 +142,8 @@ if [[ "$IS_IMPLEMENTATION" == "true" ]]; then
   fi
 fi
 
-bash "$RUNTIME_SCRIPT" "$CONTRACT_FILE" "$PROMPT"
+if [[ -n "${TICKET_ID:-}" ]]; then
+  AGENT_ACTIVE_TICKET="$TICKET_ID" bash "$RUNTIME_SCRIPT" "$CONTRACT_FILE" "$RUNTIME_PROMPT"
+else
+  bash "$RUNTIME_SCRIPT" "$CONTRACT_FILE" "$RUNTIME_PROMPT"
+fi
