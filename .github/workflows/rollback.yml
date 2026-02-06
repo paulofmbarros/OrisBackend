@@ -1,0 +1,134 @@
+name: Rollback Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_number:
+        description: 'Build run number to rollback to (e.g., 42)'
+        required: true
+        type: string
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+env:
+  CONFIGURATION: Release
+
+permissions:
+  contents: read
+  id-token: write
+  actions: read
+
+jobs:
+  rollback:
+    name: Rollback to Build #${{ inputs.run_number }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    environment: production
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4.1.1
+
+      - name: Find build run
+        id: find_build
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const targetRunNumber = parseInt('${{ inputs.run_number }}');
+            
+            const { data: runs } = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'build.yml',
+              per_page: 100
+            });
+            
+            const targetRun = runs.workflow_runs.find(r => 
+              r.run_number === targetRunNumber && r.conclusion === 'success'
+            );
+            
+            if (!targetRun) {
+              core.setFailed(`Build run #${targetRunNumber} not found or did not succeed`);
+              return;
+            }
+            
+            core.setOutput('run_id', targetRun.id.toString());
+            core.info(`Rolling back to run ${targetRun.id} (${targetRun.html_url})`);
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: web-app-package-${{ inputs.run_number }}
+          path: ./publish
+          run-id: ${{ steps.find_build.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Web Deploy
+        shell: powershell
+        run: choco install webdeploy -y --no-progress
+
+      - name: Rollback deployment
+        shell: powershell
+        env:
+          WEBDEPLOY_SERVER: ${{ secrets.WEBDEPLOY_SERVER }}
+          WEBDEPLOY_SITE_NAME: ${{ secrets.WEBDEPLOY_SITE_NAME }}
+          WEBDEPLOY_USERNAME: ${{ secrets.WEBDEPLOY_USERNAME }}
+          WEBDEPLOY_PASSWORD: ${{ secrets.WEBDEPLOY_PASSWORD }}
+        run: |
+          $msdeploy = Get-Command msdeploy.exe
+          $publishPath = Convert-Path ./publish
+          
+          Write-Host "⚠️  ROLLBACK: Deploying build #${{ inputs.run_number }}..."
+          
+          $destArg = "contentPath='$env:WEBDEPLOY_SITE_NAME'," +
+                     "computerName='https://$env:WEBDEPLOY_SERVER:8172/msdeploy.axd?site=$env:WEBDEPLOY_SITE_NAME'," +
+                     "username='$env:WEBDEPLOY_USERNAME'," +
+                     "password='$env:WEBDEPLOY_PASSWORD'," +
+                     "authtype=Basic"
+          
+          & $msdeploy.Source `
+            -verb:sync `
+            -source:contentPath="$publishPath" `
+            -dest:$destArg `
+            -allowUntrusted `
+            -enableRule:AppOffline `
+            -retryAttempts:3 `
+            -retryInterval:5000
+
+      - name: Smoke test
+        shell: powershell
+        env:
+          HEALTHCHECK_URL: ${{ secrets.PRODUCTION_HEALTHCHECK_URL }}
+        run: |
+          Start-Sleep -Seconds 15
+          
+          for ($i = 1; $i -le 5; $i++) {
+            try {
+              $response = Invoke-WebRequest -Uri $env:HEALTHCHECK_URL -UseBasicParsing
+              if ($response.StatusCode -eq 200) {
+                Write-Host "✅ Rollback successful"
+                exit 0
+              }
+            } catch {
+              Write-Host "Attempt $i failed"
+              Start-Sleep -Seconds 10
+            }
+          }
+          
+          Write-Error "Rollback smoke test failed"
+          exit 1
+
+      - name: Generate summary
+        if: always()
+        shell: powershell
+        run: |
+          @"
+          ### ⏮️ Production Rollback Summary
+          
+          **Status:** ${{ job.status }}
+          **Rolled back to:** Build #${{ inputs.run_number }}
+          **Executed by:** ${{ github.actor }}
+          **Timestamp:** $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")
+          "@ >> $env:GITHUB_STEP_SUMMARY

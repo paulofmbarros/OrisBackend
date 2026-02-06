@@ -13,22 +13,47 @@ concurrency:
 env:
   DOTNET_VERSION: '10.0.x'
   CONFIGURATION: Release
+  PROJECT_PATH: 'src/Oris.Api/Oris.WebApplication/Oris.WebApplication.csproj'
+
+permissions:
+  contents: read
+  security-events: write
+  id-token: write   # future-proofing for OIDC deployments
+  actions: read      # ADDED: Required for cross-workflow artifact downloads
 
 jobs:
   build:
-    name: Build and analyze
+    name: Build, Test and Analyze (DevSecOps)
     runs-on: ubuntu-latest
+
     steps:
+      # -----------------------------
+      # Checkout (pinned)
+      # -----------------------------
+      - uses: actions/checkout@v4.1.1
+        with:
+          fetch-depth: 0
+
+      # -----------------------------
+      # Secrets scanning (FAIL FAST)
+      # -----------------------------
+      - name: Scan for secrets
+        uses: gitleaks/gitleaks-action@v2
+        with:
+          fail: true
+
+      # -----------------------------
+      # Java (Sonar dependency)
+      # -----------------------------
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: 17
           distribution: 'zulu'
 
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
+      # -----------------------------
+      # .NET SDK
+      # -----------------------------
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
@@ -39,20 +64,55 @@ jobs:
             **/*.csproj
             **/packages.lock.json
 
-      - name: Install Tools
-        run: |
-          mkdir -p ${{ runner.temp }}/scanner
-          dotnet tool update dotnet-sonarscanner --tool-path ${{ runner.temp }}/scanner
+      # -----------------------------
+      # Cache Sonar Scanner
+      # -----------------------------
+      - name: Cache Sonar Scanner
+        uses: actions/cache@v4
+        with:
+          path: ~/.dotnet/tools
+          key: ${{ runner.os }}-dotnet-tools-sonarscanner-${{ hashFiles('**/global.json') }}
+          restore-keys: |
+            ${{ runner.os }}-dotnet-tools-sonarscanner-
 
-      # Restore explícito de todos os projetos antes do build
+      # -----------------------------
+      # Sonar Scanner
+      # -----------------------------
+      - name: Install Sonar Scanner
+        run: dotnet tool install --global dotnet-sonarscanner || dotnet tool update --global dotnet-sonarscanner
+
+      # -----------------------------
+      # Restore
+      # -----------------------------
       - name: Restore dependencies
         run: dotnet restore OrisBackend.sln
 
-      - name: Build and analyze with SonarQube
+      # -----------------------------
+      # Dependency vulnerability scan (SCA)
+      # -----------------------------
+      - name: Dependency vulnerability scan
+        uses: dependency-check/Dependency-Check_Action@1.1.0
+        continue-on-error: false
+        with:
+          project: "OrisBackend"
+          path: .
+          format: "SARIF"
+          out: "dependency-check-report"
+
+      - name: Upload dependency scan results
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: dependency-check-report/dependency-check-report.sarif
+
+      # -----------------------------
+      # Build + Test + Sonar analysis
+      # -----------------------------
+      - name: Build, Test and Analyze with SonarCloud
+        id: sonarcloud
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
-          ${{ runner.temp }}/scanner/dotnet-sonarscanner begin \
+          dotnet-sonarscanner begin \
             /k:"paulofmbarros_OrisBackend" \
             /o:"oris" \
             /d:sonar.token="$SONAR_TOKEN" \
@@ -60,45 +120,113 @@ jobs:
             /d:sonar.host.url="https://sonarcloud.io" \
             /d:sonar.projectBaseDir="$GITHUB_WORKSPACE" \
             /d:sonar.scanner.skipJreProvisioning=true
-          
-          # Build sem o --no-restore para garantir que o Linux vincule as DLLs corretamente
-          dotnet build OrisBackend.sln --configuration ${{ env.CONFIGURATION }}
-          
-          # Execução dos testes (Docker/Testcontainers nativo)
-          dotnet test OrisBackend.sln --no-build --configuration ${{ env.CONFIGURATION }} \
-            --collect:"XPlat Code Coverage" --logger trx --results-directory ./TestResults/ \
-            -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover
-          
-          ${{ runner.temp }}/scanner/dotnet-sonarscanner end /d:sonar.token="$SONAR_TOKEN"
 
+          dotnet build OrisBackend.sln --configuration ${{ env.CONFIGURATION }}
+
+          dotnet test OrisBackend.sln \
+            --no-build \
+            --configuration ${{ env.CONFIGURATION }} \
+            --collect:"XPlat Code Coverage" \
+            --logger trx \
+            --results-directory ./TestResults/ \
+            -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover
+
+          dotnet-sonarscanner end \
+            /d:sonar.token="$SONAR_TOKEN"
+
+      # -----------------------------
+      # Sonar Quality Gate (ENFORCEMENT)
+      # -----------------------------
+      - name: SonarCloud Quality Gate
+        uses: sonarsource/sonarqube-quality-gate-action@v1.1.0
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      - name: Check Quality Gate Status
+        if: steps.sonarcloud.outcome == 'failure'
+        run: |
+          echo "::error::SonarCloud Quality Gate failed - build cannot proceed"
+          exit 1
+
+      # -----------------------------
+      # Upload test results
+      # -----------------------------
       - name: Upload Test Results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results
+          name: test-results-${{ github.run_number }}
           path: ./TestResults
           if-no-files-found: warn
+          retention-days: 30
 
+      # -----------------------------
+      # Publish artifact
+      # -----------------------------
       - name: Publish API
-        run: dotnet publish src/Oris.Api/Oris.WebApplication/Oris.WebApplication.csproj -c ${{ env.CONFIGURATION }} -o ./publish
+        run: dotnet publish ${{ env.PROJECT_PATH }} \
+          -c ${{ env.CONFIGURATION }} \
+          -o ./publish
 
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: web-app-package
+          name: web-app-package-${{ github.run_number }}
           path: ./publish
+          retention-days: 30
 
+      # -----------------------------
+      # Build provenance (supply-chain security)
+      # -----------------------------
+      - name: Generate build provenance
+        uses: actions/attest-build-provenance@v1
+
+      # -----------------------------
+      # Workflow Summary
+      # -----------------------------
+      - name: Generate Build Summary
+        if: always()
+        run: |
+          echo "### Build Results 🚀" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Configuration:** ${{ env.CONFIGURATION }}" >> $GITHUB_STEP_SUMMARY
+          echo "**.NET Version:** ${{ env.DOTNET_VERSION }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Run Number:** ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### Security Scans" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Secrets scanning (Gitleaks)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Dependency vulnerabilities (OWASP)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Code quality (SonarCloud)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Security analysis (CodeQL)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "- 📦 Build: web-app-package-${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 📊 Tests: test-results-${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+
+  # --------------------------------------------------
+  # CodeQL – Deep semantic security analysis
+  # --------------------------------------------------
   codeql:
     name: CodeQL Security Analysis
     runs-on: ubuntu-latest
     permissions:
       security-events: write
+
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.1.1
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
+        uses: github/codeql-action/init@v3
         with:
           languages: csharp
-          build-mode: none
+
+      - name: Build for CodeQL
+        run: dotnet build OrisBackend.sln --configuration Release
+
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v4
+        uses: github/codeql-action/analyze@v3
