@@ -195,17 +195,43 @@ jobs:
       - name: Install Web Deploy
         shell: powershell
         run: |
-          Write-Host "Installing Web Deploy..."
-          choco install webdeploy -y --no-progress
-          
-          # Verify installation
-          $msdeploy = Get-Command msdeploy.exe -ErrorAction SilentlyContinue
-          if (-not $msdeploy) {
-            Write-Error "Web Deploy installation failed"
+          function Find-MsDeploy {
+            $cmd = Get-Command msdeploy.exe -ErrorAction SilentlyContinue
+            if ($cmd) { return $cmd.Source }
+
+            $candidates = @(
+              "$env:ProgramFiles\IIS\Microsoft Web Deploy V3\msdeploy.exe",
+              "${env:ProgramFiles(x86)}\IIS\Microsoft Web Deploy V3\msdeploy.exe"
+            )
+
+            foreach ($path in $candidates) {
+              if (Test-Path $path) { return $path }
+            }
+
+            return $null
+          }
+
+          $msdeployPath = Find-MsDeploy
+          if ($msdeployPath) {
+            Write-Host "Web Deploy already available: $msdeployPath"
+          } else {
+            Write-Host "Installing Web Deploy..."
+            choco install webdeploy -y --no-progress
+            $msdeployPath = Find-MsDeploy
+          }
+
+          if (-not $msdeployPath) {
+            Write-Error "Web Deploy installation failed: msdeploy.exe not found after install."
             exit 1
           }
-          
-          Write-Host "✅ Web Deploy installed: $($msdeploy.Source)"
+
+          $msdeployDir = Split-Path -Path $msdeployPath -Parent
+          if ($env:Path -notlike "*$msdeployDir*") {
+            $env:Path = "$env:Path;$msdeployDir"
+          }
+          $msdeployDir >> $env:GITHUB_PATH
+
+          Write-Host "✅ Web Deploy ready: $msdeployPath"
 
       # --------------------------------------------------
       # Create deployment marker
@@ -244,7 +270,20 @@ jobs:
           WEBDEPLOY_USERNAME: ${{ secrets.WEBDEPLOY_USERNAME }}
           WEBDEPLOY_PASSWORD: ${{ secrets.WEBDEPLOY_PASSWORD }}
         run: |
-          $msdeploy = Get-Command msdeploy.exe
+          $msdeploy = Get-Command msdeploy.exe -ErrorAction SilentlyContinue
+          if (-not $msdeploy) {
+            $candidatePaths = @(
+              "$env:ProgramFiles\IIS\Microsoft Web Deploy V3\msdeploy.exe",
+              "${env:ProgramFiles(x86)}\IIS\Microsoft Web Deploy V3\msdeploy.exe"
+            )
+            $resolved = $candidatePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+            if ($resolved) {
+              $msdeploy = @{ Source = $resolved }
+            } else {
+              Write-Error "msdeploy.exe not found on runner."
+              exit 1
+            }
+          }
           $publishPath = Convert-Path ./publish
           
           Write-Host "Starting deployment to $env:WEBDEPLOY_SITE_NAME..."
