@@ -16,7 +16,10 @@ done
 PROMPT="$*"
 if [[ -z "${PROMPT:-}" ]]; then
   echo "Missing prompt."
-  echo "Example: ./scripts/agent.sh --runtime claude --role backend \"Work on Jira ticket OR-25\""
+  echo "Examples:"
+  echo "  ./scripts/agent.sh --runtime claude --role backend \"Work on Jira ticket OR-25\""
+  echo "  AGENT_PROCEED=true ./scripts/agent.sh --runtime gemini --role backend \"Proceed with implementation\""
+  echo "  AGENT_REVIEW=true ./scripts/agent.sh --runtime gemini --role backend \"Review the code\""
   exit 1
 fi
 
@@ -81,4 +84,3 @@ if [[ -n "$TICKET_ID" ]] && [[ "$IS_IMPLEMENTATION" == "true" ]]; then
 fi
 
 bash "$RUNTIME_SCRIPT" "$CONTRACT_FILE" "$PROMPT"
-
