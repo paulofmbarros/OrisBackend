@@ -76,7 +76,7 @@ run_gemini() {
   gemini \
     --approval-mode default \
     --allowed-mcp-server-names "$MCP_SERVERS" \
-    "$PROMPT_FILE"
+    --prompt " " < "$PROMPT_FILE"
   local EXIT_CODE=$?
   rm -f "$PROMPT_FILE"
   return $EXIT_CODE
@@ -91,7 +91,7 @@ run_gemini_resume() {
     --resume latest \
     --approval-mode default \
     --allowed-mcp-server-names "$MCP_SERVERS" \
-    "$PROMPT_FILE"
+    --prompt " " < "$PROMPT_FILE"
   local EXIT_CODE=$?
   rm -f "$PROMPT_FILE"
   return $EXIT_CODE
