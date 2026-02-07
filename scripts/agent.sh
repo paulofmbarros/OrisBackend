@@ -36,6 +36,11 @@ if [[ ! -f "$CONTRACT_FILE" ]]; then
   exit 1
 fi
 
+# Route through the phase dispatcher unless this invocation already came from it.
+if [[ "${AGENT_SKIP_DISPATCH:-false}" != "true" ]]; then
+  exec "$REPO_ROOT/scripts/run-phase.sh" --runtime "$RUNTIME" --role "$ROLE" "$PROMPT"
+fi
+
 # User instruction is passed separately to runtimes (important for Claude)
 RUNTIME_SCRIPT="$REPO_ROOT/scripts/runtimes/${RUNTIME}.sh"
 if [[ ! -f "$RUNTIME_SCRIPT" ]]; then
@@ -85,7 +90,10 @@ RUNTIME_PROMPT="$PROMPT"
 # 2. Check for Implementation Mode
 #    Triggered by AGENT_PROCEED env var OR "proceed" keyword in prompt
 IS_IMPLEMENTATION=false
-if [[ "${AGENT_PROCEED:-false}" == "true" ]]; then
+PHASE_HINT="$(echo "${AGENT_PHASE:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+if [[ "$PHASE_HINT" == "implement" ]]; then
+  IS_IMPLEMENTATION=true
+elif [[ "${AGENT_PROCEED:-false}" == "true" ]]; then
   IS_IMPLEMENTATION=true
 elif echo "$PROMPT" | grep -qi "proceed"; then
   IS_IMPLEMENTATION=true

@@ -19,8 +19,12 @@ public static class DependencyInjection
         this IServiceCollection services,
         IConfiguration configuration)
     {
-        var jwtSecret = configuration["Supabase:JwtSecret"];
-        if (string.IsNullOrWhiteSpace(jwtSecret))
+        var supabaseSection = configuration.GetSection(SupabaseOptions.SectionName);
+        services.Configure<SupabaseOptions>(supabaseSection);
+
+        var supabaseOptions = supabaseSection.Get<SupabaseOptions>();
+
+        if (string.IsNullOrWhiteSpace(supabaseOptions?.JwtSecret))
         {
             throw new InvalidOperationException("Missing required configuration value 'Supabase:JwtSecret'.");
         }
@@ -37,7 +41,7 @@ public static class DependencyInjection
                 {
                     ValidateIssuerSigningKey = true,
                     IssuerSigningKey = new SymmetricSecurityKey(
-                        Encoding.UTF8.GetBytes(jwtSecret)),
+                        Encoding.UTF8.GetBytes(supabaseOptions.JwtSecret)),
                     ValidateIssuer = false,
                     ValidateAudience = false,
                     ValidateLifetime = true,

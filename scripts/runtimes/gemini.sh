@@ -9,10 +9,10 @@ USER_PROMPT="$2"
 CACHE_DIR="$(dirname "$0")/../../tmp/cache"
 STATE_DIR="$(dirname "$0")/../../tmp/state"
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-REVIEW_LOG_FILE="$STATE_DIR/review_checks.log"
-SONAR_MCP_LOG_FILE="$STATE_DIR/sonar_mcp_review.log"
-JIRA_REVIEW_LOG_FILE="$STATE_DIR/jira_review_update.log"
-MCP_SERVERS="notion,atlassian-rovo-mcp-server,sonarqube"
+REVIEW_LOG_FILE="${AGENT_REVIEW_LOG_FILE:-$STATE_DIR/review_checks.log}"
+SONAR_MCP_LOG_FILE="${AGENT_SONAR_MCP_LOG_FILE:-$STATE_DIR/sonar_mcp_review.log}"
+JIRA_REVIEW_LOG_FILE="${AGENT_JIRA_REVIEW_LOG_FILE:-$STATE_DIR/jira_review_update.log}"
+MCP_SERVERS="${AGENT_MCP_SERVERS:-notion,atlassian-rovo-mcp-server,sonarqube}"
 READ_ONLY_APPROVAL_MODE="${AGENT_GEMINI_READ_ONLY_APPROVAL_MODE:-default}"
 MUTATING_APPROVAL_MODE="${AGENT_GEMINI_MUTATING_APPROVAL_MODE:-yolo}"
 GEMINI_MODELS_CSV="${AGENT_GEMINI_MODELS:-default}"
@@ -28,8 +28,8 @@ REQUIRE_REVIEW_JIRA_COMMENT="${AGENT_GEMINI_REQUIRE_REVIEW_JIRA_COMMENT:-true}"
 REVIEW_CLEANUP_ON_SUCCESS="${AGENT_GEMINI_REVIEW_CLEANUP_ON_SUCCESS:-true}"
 REVIEW_CLEANUP_REMOVE_LOGS="${AGENT_GEMINI_REVIEW_CLEANUP_REMOVE_LOGS:-true}"
 REVIEW_CLEANUP_REMOVE_CACHE="${AGENT_GEMINI_REVIEW_CLEANUP_REMOVE_CACHE:-false}"
-SONAR_REVIEW_MODE="${AGENT_GEMINI_SONAR_REVIEW_MODE:-auto}"
-JIRA_REVIEW_MODE="${AGENT_GEMINI_JIRA_REVIEW_MODE:-auto}"
+SONAR_REVIEW_MODE="${AGENT_GEMINI_SONAR_REVIEW_MODE:-always}"
+JIRA_REVIEW_MODE="${AGENT_GEMINI_JIRA_REVIEW_MODE:-always}"
 AUX_RESUME_POLICY="${AGENT_GEMINI_AUX_RESUME_POLICY:-auto}"
 AUX_RESUME_MAX_AGE_SECONDS="${AGENT_GEMINI_AUX_RESUME_MAX_AGE_SECONDS:-14400}"
 IMPLEMENTATION_USE_RESUME="${AGENT_GEMINI_IMPLEMENTATION_USE_RESUME:-false}"
@@ -37,6 +37,10 @@ GEMINI_ATTEMPT_TIMEOUT_SECONDS="${AGENT_GEMINI_ATTEMPT_TIMEOUT_SECONDS:-0}"
 GEMINI_INTERACTIVE_MODE="${AGENT_GEMINI_INTERACTIVE_MODE:-never}"
 GEMINI_INTERACTIVE_MODEL="${AGENT_GEMINI_INTERACTIVE_MODEL:-}"
 ACTIVE_TICKET="${AGENT_ACTIVE_TICKET:-}"
+PHASE_OVERRIDE="${AGENT_PHASE:-}"
+MCP_RETRY_ATTEMPTS="${AGENT_MCP_RETRY_ATTEMPTS:-2}"
+MCP_RETRY_BASE_DELAY_SECONDS="${AGENT_MCP_RETRY_BASE_DELAY_SECONDS:-2}"
+REVIEW_ISOLATE_STARTUP_DIR="${AGENT_REVIEW_ISOLATE_STARTUP_DIR:-true}"
 ACTIVE_DEBUG_LOG_FILE=""
 AUX_CACHE_DIR="$CACHE_DIR/review_aux"
 
@@ -329,6 +333,7 @@ should_run_sonar_review() {
   case "$mode" in
     always) return 0 ;;
     never) return 1 ;;
+    *) ;;
   esac
 
   echo "$prompt" | grep -Eqi "sonar|sonarqube|quality gate|security hotspot|coverage|code smells|vulnerabilit"
@@ -346,6 +351,7 @@ should_run_jira_review_update() {
   case "$mode" in
     always) return 0 ;;
     never) return 1 ;;
+    *) ;;
   esac
 
   echo "$prompt" | grep -Eqi "jira|atlassian|ticket update|post( a)? comment|review update"
@@ -496,6 +502,8 @@ should_attempt_aux_resume() {
       ;;
     never)
       return 1
+      ;;
+    *)
       ;;
   esac
 
@@ -851,6 +859,95 @@ is_proceed_request() {
   echo "$prompt" | grep -Eqi "proceed[[:space:]]+with([[:space:]]+the)?[[:space:]]+implementation"
 }
 
+normalize_phase_token() {
+  local raw
+  raw="$(echo "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+
+  case "$raw" in
+    plan|planning) echo "plan" ;;
+    implement|implementation|proceed) echo "implement" ;;
+    review|qa) echo "review" ;;
+    *) echo "" ;;
+  esac
+}
+
+resolve_execution_phase() {
+  local normalized
+  normalized="$(normalize_phase_token "$PHASE_OVERRIDE")"
+  if [[ -n "$normalized" ]]; then
+    echo "$normalized"
+    return 0
+  fi
+
+  if [[ "$REVIEW_MODE" == "true" ]] || echo "$USER_PROMPT" | grep -Eqi "^[[:space:]]*review( the)? code([[:space:]]|$)"; then
+    echo "review"
+    return 0
+  fi
+
+  if [[ "$PROCEED_MODE" == "true" ]] || is_proceed_request "$USER_PROMPT"; then
+    echo "implement"
+    return 0
+  fi
+
+  echo "plan"
+}
+
+is_transient_mcp_failure_text() {
+  local text="$1"
+  echo "$text" | grep -Eqi "fetch failed|connection closed|connection reset|connection refused|timed out|timeout|resource exhausted|429|temporarily unavailable|try again|retry|service unavailable|broken pipe|econn"
+}
+
+run_mcp_step_with_retry() {
+  local step_name="$1"
+  local log_file="$2"
+  shift 2
+  local max_attempts="$MCP_RETRY_ATTEMPTS"
+  local delay_seconds="$MCP_RETRY_BASE_DELAY_SECONDS"
+  local attempt
+  local exit_code=0
+  local snippet=""
+
+  if ! [[ "$max_attempts" =~ ^[0-9]+$ ]] || [[ "$max_attempts" -lt 1 ]]; then
+    max_attempts=2
+  fi
+  if ! [[ "$delay_seconds" =~ ^[0-9]+$ ]] || [[ "$delay_seconds" -lt 1 ]]; then
+    delay_seconds=2
+  fi
+
+  for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+    if "$@"; then
+      return 0
+    fi
+    exit_code=$?
+    snippet="$(tail -n 60 "$log_file" 2>/dev/null || true)"
+
+    if [[ "$attempt" -ge "$max_attempts" ]]; then
+      echo "$step_name failed after $attempt attempt(s)." >&2
+      if [[ -n "$snippet" ]]; then
+        echo "$step_name output snippet:" >&2
+        echo "$snippet" >&2
+      fi
+      echo "Suggestion: verify MCP auth/connectivity and rerun this phase." >&2
+      return "$exit_code"
+    fi
+
+    if ! is_transient_mcp_failure_text "$snippet"; then
+      echo "$step_name failed with a non-transient error (attempt $attempt/$max_attempts)." >&2
+      if [[ -n "$snippet" ]]; then
+        echo "$step_name output snippet:" >&2
+        echo "$snippet" >&2
+      fi
+      return "$exit_code"
+    fi
+
+    echo "$step_name failed due to transient MCP issue (attempt $attempt/$max_attempts). Retrying in ${delay_seconds}s..." >&2
+    sleep "$delay_seconds"
+    delay_seconds=$((delay_seconds * 2))
+  done
+
+  return "$exit_code"
+}
+
 resolve_dotnet_cmd() {
   if [[ -x "/Users/paulofmbarros/.dotnet/dotnet" ]]; then
     echo "/Users/paulofmbarros/.dotnet/dotnet"
@@ -865,10 +962,18 @@ resolve_dotnet_cmd() {
 
 run_local_review_checks() {
   local dotnet_cmd
+  local startup_dir="$REPO_ROOT"
+  local created_startup_dir=false
+  local solution_path="$REPO_ROOT/OrisBackend.sln"
   dotnet_cmd="$(resolve_dotnet_cmd)" || {
     echo "dotnet CLI not found. Unable to run review checks." >&2
     return 1
   }
+
+  if [[ "$REVIEW_ISOLATE_STARTUP_DIR" == "true" ]]; then
+    startup_dir="$(mktemp -d "$STATE_DIR/dotnet-startup.XXXXXX" 2>/dev/null || mktemp -d)"
+    created_startup_dir=true
+  fi
 
   : > "$REVIEW_LOG_FILE"
   echo "Running review checks. Full log: $REVIEW_LOG_FILE"
@@ -876,23 +981,41 @@ run_local_review_checks() {
   {
     echo "== Housekeeping and Review Checks =="
     echo "Repository: $REPO_ROOT"
+    echo "MSBuild startup directory: $startup_dir"
+    echo "Review startup isolation: $REVIEW_ISOLATE_STARTUP_DIR"
     echo ""
     echo "[1/3] dotnet restore"
   } >> "$REVIEW_LOG_FILE"
-  "$dotnet_cmd" restore OrisBackend.sln >> "$REVIEW_LOG_FILE" 2>&1 || return 1
+  (cd "$startup_dir" && "$dotnet_cmd" restore "$solution_path") >> "$REVIEW_LOG_FILE" 2>&1 || {
+    [[ "$created_startup_dir" == "true" ]] && rm -rf "$startup_dir"
+    return 1
+  }
 
   {
     echo ""
     echo "[2/3] dotnet format"
   } >> "$REVIEW_LOG_FILE"
-  "$dotnet_cmd" format OrisBackend.sln >> "$REVIEW_LOG_FILE" 2>&1 || return 1
+  (cd "$startup_dir" && "$dotnet_cmd" format "$solution_path") >> "$REVIEW_LOG_FILE" 2>&1 || {
+    [[ "$created_startup_dir" == "true" ]] && rm -rf "$startup_dir"
+    return 1
+  }
 
   {
     echo ""
     echo "[3/3] dotnet build and test"
   } >> "$REVIEW_LOG_FILE"
-  "$dotnet_cmd" build OrisBackend.sln --configuration Release >> "$REVIEW_LOG_FILE" 2>&1 || return 1
-  "$dotnet_cmd" test OrisBackend.sln --no-build --configuration Release >> "$REVIEW_LOG_FILE" 2>&1 || return 1
+  (cd "$startup_dir" && "$dotnet_cmd" build "$solution_path" --configuration Release) >> "$REVIEW_LOG_FILE" 2>&1 || {
+    [[ "$created_startup_dir" == "true" ]] && rm -rf "$startup_dir"
+    return 1
+  }
+  (cd "$startup_dir" && "$dotnet_cmd" test "$solution_path" --no-build --configuration Release) >> "$REVIEW_LOG_FILE" 2>&1 || {
+    [[ "$created_startup_dir" == "true" ]] && rm -rf "$startup_dir"
+    return 1
+  }
+
+  if [[ "$created_startup_dir" == "true" ]]; then
+    rm -rf "$startup_dir"
+  fi
 
   return 0
 }
@@ -1266,8 +1389,9 @@ run_post_review_cleanup() {
 
 PROCEED_MODE="${AGENT_PROCEED:-false}"
 REVIEW_MODE="${AGENT_REVIEW:-false}"
+PHASE="$(resolve_execution_phase)"
 
-if [[ "$REVIEW_MODE" == "true" ]] || echo "$USER_PROMPT" | grep -Eqi "^[[:space:]]*review( the)? code([[:space:]]|$)"; then
+if [[ "$PHASE" == "review" ]]; then
   # --- REVIEW MODE ---
   echo "Review mode detected."
   REVIEW_INTERACTIVE_FALLBACK_USED=false
@@ -1338,7 +1462,7 @@ REVIEW PHASE REQUIREMENTS:
   if [[ $EXIT_CODE -eq 0 ]] && [[ "$REVIEW_INTERACTIVE_FALLBACK_USED" != "true" ]] && ! is_interactive_mode_always; then
     if should_run_sonar_review "$USER_PROMPT"; then
       echo "Running Sonar MCP review. Log: $SONAR_MCP_LOG_FILE"
-      if ! run_and_maybe_log run_sonar_mcp_review; then
+      if ! run_and_maybe_log run_mcp_step_with_retry "Sonar MCP review" "$SONAR_MCP_LOG_FILE" run_sonar_mcp_review; then
         echo "Sonar MCP review failed." >&2
         EXIT_CODE=1
       else
@@ -1370,7 +1494,7 @@ REVIEW PHASE REQUIREMENTS:
         fi
       else
         echo "Posting Jira review update for $REVIEW_TICKET. Log: $JIRA_REVIEW_LOG_FILE"
-        if run_and_maybe_log run_post_review_jira_update "$REVIEW_TICKET"; then
+        if run_and_maybe_log run_mcp_step_with_retry "Jira review update" "$JIRA_REVIEW_LOG_FILE" run_post_review_jira_update "$REVIEW_TICKET"; then
           echo "Jira review update posted to $REVIEW_TICKET."
         else
           echo "Failed to post Jira review update to $REVIEW_TICKET. See $JIRA_REVIEW_LOG_FILE" >&2
@@ -1394,7 +1518,7 @@ REVIEW PHASE REQUIREMENTS:
 
   exit $EXIT_CODE
 
-elif [[ "$PROCEED_MODE" == "true" ]] || is_proceed_request "$USER_PROMPT"; then
+elif [[ "$PHASE" == "implement" ]]; then
   # --- IMPLEMENTATION MODE ---
   echo "Implementation mode detected."
   IMPLEMENTATION_INTERACTIVE_FALLBACK_USED=false

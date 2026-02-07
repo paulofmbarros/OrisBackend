@@ -7,6 +7,9 @@
 
 ## Standard Deployment
 
+0. Run the local pre-release guard:
+   - `./scripts/pre-release-guard.sh --ticket OR-123`
+   - ensure `tmp/state/publish.log` and `tmp/state/smoke_test.log` exist and are current.
 1. Ensure `main` branch has a successful build
 2. Go to Actions → Deploy to Production
 3. Click "Run workflow"
@@ -28,6 +31,15 @@ If deployment fails or issues are detected:
 - Check the build.yml workflow runs
 - Build numbers are shown as "#42", "#43", etc.
 - Artifacts are kept for 30 days
+
+## Local Agent Evidence Checklist
+
+- plan metadata (latest): `tmp/state/artifacts/*/plan.json`
+- implementation metadata (latest): `tmp/state/artifacts/*/implement.json`
+- review metadata (latest): `tmp/state/artifacts/*/review.json`
+- publish output log: `tmp/state/publish.log`
+- smoke test log: `tmp/state/smoke_test.log`
+- rolling run summary: `tmp/state/runs.log`
 
 ## Emergency Contacts
 
