@@ -358,12 +358,12 @@ resolve_head_commit() {
 hash_text() {
   local payload="$1"
 
-  if command -v md5 >/dev/null 2>&1; then
-    printf "%s" "$payload" | md5 | awk '{print $NF}'
-  elif command -v md5sum >/dev/null 2>&1; then
-    printf "%s" "$payload" | md5sum | awk '{print $1}'
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf "%s" "$payload" | sha256sum | awk '{print $1}'
   elif command -v shasum >/dev/null 2>&1; then
     printf "%s" "$payload" | shasum -a 256 | awk '{print $1}'
+  elif command -v openssl >/dev/null 2>&1; then
+    printf "%s" "$payload" | openssl dgst -sha256 | awk '{print $NF}'
   else
     # Last resort: low-collision shell hash surrogate
     printf "%s" "$payload" | cksum | awk '{print $1}'
@@ -377,12 +377,12 @@ hash_file() {
     return 0
   fi
 
-  if command -v md5 >/dev/null 2>&1; then
-    md5 -q "$file" 2>/dev/null || md5 "$file" | awk '{print $NF}'
-  elif command -v md5sum >/dev/null 2>&1; then
-    md5sum "$file" | awk '{print $1}'
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" | awk '{print $1}'
   elif command -v shasum >/dev/null 2>&1; then
     shasum -a 256 "$file" | awk '{print $1}'
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 "$file" | awk '{print $NF}'
   else
     cksum "$file" | awk '{print $1}'
   fi

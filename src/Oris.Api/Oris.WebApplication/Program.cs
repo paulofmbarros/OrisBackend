@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Oris.Application.Extensions;
 using Oris.Infrastructure.Extensions;
 
@@ -27,4 +28,5 @@ app.MapHealthChecks("/health").AllowAnonymous();
 
 await app.RunAsync();
 
+[ExcludeFromCodeCoverage]
 public partial class Program { }
