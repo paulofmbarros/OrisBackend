@@ -141,6 +141,7 @@ jobs:
             /o:"oris" \
             /d:sonar.token="$SONAR_TOKEN" \
             /d:sonar.cs.opencover.reportsPaths="**/coverage.opencover.xml" \
+            /d:sonar.coverage.exclusions="**/Oris.WebApplication/Program.cs,**/Oris.Infrastructure/Extensions/DependencyInjection.cs" \
             /d:sonar.host.url="https://sonarcloud.io" \
             /d:sonar.projectBaseDir="$GITHUB_WORKSPACE" \
             /d:sonar.scanner.skipJreProvisioning=true \
@@ -155,7 +156,8 @@ jobs:
             --collect:"XPlat Code Coverage" \
             --logger trx \
             --results-directory ./TestResults/ \
-            -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover
+            -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover \
+            DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.ExcludeByFile="**/Oris.WebApplication/Program.cs,**/Oris.Infrastructure/Extensions/DependencyInjection.cs"
 
           dotnet-sonarscanner end \
             /d:sonar.token="$SONAR_TOKEN"

@@ -43,19 +43,26 @@ jobs:
 
       - name: Extract trigger context
         id: context
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_JIRA_TICKET: ${{ github.event.inputs.jira_ticket }}
+          INPUT_ROLE: ${{ github.event.inputs.role }}
+          INPUT_RUNTIME: ${{ github.event.inputs.runtime }}
+          COMMENT_BODY_VAL: ${{ github.event.comment.body }}
+          ISSUE_NUMBER_VAL: ${{ github.event.issue.number }}
         run: |
           JIRA_KEY=""
           # 1. Handle Manual Trigger (Workflow Dispatch)
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            JIRA_KEY="${{ github.event.inputs.jira_ticket }}"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            JIRA_KEY="$INPUT_JIRA_TICKET"
             echo "PROMPT=Work on Jira ticket $JIRA_KEY" >> $GITHUB_OUTPUT
-            echo "ROLE=${{ github.event.inputs.role }}" >> $GITHUB_OUTPUT
-            echo "RUNTIME=${{ github.event.inputs.runtime }}" >> $GITHUB_OUTPUT
+            echo "ROLE=$INPUT_ROLE" >> $GITHUB_OUTPUT
+            echo "RUNTIME=$INPUT_RUNTIME" >> $GITHUB_OUTPUT
             echo "ISSUE_NUMBER=" >> $GITHUB_OUTPUT
 
           # 2. Handle Comment Trigger (ChatOps)
-          elif [ "${{ github.event_name }}" = "issue_comment" ]; then
-            COMMENT_BODY="${{ github.event.comment.body }}"
+          elif [ "$EVENT_NAME" = "issue_comment" ]; then
+            COMMENT_BODY="$COMMENT_BODY_VAL"
           
             # Case A: New Plan (/agent ...)
             if echo "$COMMENT_BODY" | grep -qE "^\s*/agent\s+"; then
@@ -64,7 +71,7 @@ jobs:
               echo "PROMPT=$PROMPT" >> $GITHUB_OUTPUT
               echo "ROLE=backend" >> $GITHUB_OUTPUT
               echo "RUNTIME=gemini" >> $GITHUB_OUTPUT
-              echo "ISSUE_NUMBER=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
+              echo "ISSUE_NUMBER=$ISSUE_NUMBER_VAL" >> $GITHUB_OUTPUT
               echo "IS_REVISION=false" >> $GITHUB_OUTPUT
           
             # Case B: Revision (/revise ...)
@@ -74,7 +81,7 @@ jobs:
               JIRA_KEY=$(echo "$ISSUE_TITLE" | grep -oE '[A-Z]+-[0-9]+' | head -1 || echo "")
               echo "REVISION_FEEDBACK=$REVISION_FEEDBACK" >> $GITHUB_OUTPUT
               echo "IS_REVISION=true" >> $GITHUB_OUTPUT
-              echo "ISSUE_NUMBER=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
+              echo "ISSUE_NUMBER=$ISSUE_NUMBER_VAL" >> $GITHUB_OUTPUT
               echo "ROLE=backend" >> $GITHUB_OUTPUT
               echo "RUNTIME=gemini" >> $GITHUB_OUTPUT
             else
@@ -145,16 +152,20 @@ jobs:
 
       - name: Prepare Agent Prompt
         id: prep_agent
+        env:
+          IS_REVISION: ${{ steps.context.outputs.IS_REVISION }}
+          ORIGINAL_PROMPT: ${{ steps.revision_context.outputs.original_prompt }}
+          REVISION_FEEDBACK: ${{ steps.context.outputs.REVISION_FEEDBACK }}
+          PROMPT: ${{ steps.context.outputs.PROMPT }}
+          ROLE: ${{ steps.context.outputs.ROLE }}
         run: |
-          if [ "${{ steps.context.outputs.IS_REVISION }}" = "true" ]; then
-            BASE_PROMPT="${{ steps.revision_context.outputs.original_prompt }}"
-            REVISION_FEEDBACK="${{ steps.context.outputs.REVISION_FEEDBACK }}"
+          if [ "$IS_REVISION" = "true" ]; then
+            BASE_PROMPT="$ORIGINAL_PROMPT"
             TASK_INSTRUCTION="$BASE_PROMPT"$'\n\n'"REVISION REQUEST: The previous plan needs to be revised based on: $REVISION_FEEDBACK"
           else
-            TASK_INSTRUCTION="${{ steps.context.outputs.PROMPT }}"
+            TASK_INSTRUCTION="$PROMPT"
           fi
           
-          ROLE="${{ steps.context.outputs.ROLE }}"
           CONTRACT_FILE="agent-contracts/${ROLE}.md"
           
           FULL_PROMPT="You are the Oris Backend Engineer AI.
@@ -184,19 +195,20 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          RUNTIME: ${{ steps.context.outputs.RUNTIME }}
+          ROLE: ${{ steps.context.outputs.ROLE }}
+          ENHANCED_PROMPT: ${{ steps.prep_agent.outputs.ENHANCED_PROMPT }}
         run: |
           set +e
           OUTPUT_FILE=$(mktemp)
           ERROR_FILE=$(mktemp)
           
-          RUNTIME="${{ steps.context.outputs.RUNTIME }}"
-          
           echo "Running agent with Runtime: $RUNTIME"
           
           ./scripts/agent.sh \
             --runtime "$RUNTIME" \
-            --role "${{ steps.context.outputs.ROLE }}" \
-            "${{ steps.prep_agent.outputs.ENHANCED_PROMPT }}" \
+            --role "$ROLE" \
+            "$ENHANCED_PROMPT" \
             > "$OUTPUT_FILE" 2> "$ERROR_FILE"
           
           EXIT_CODE=$?
@@ -303,15 +315,20 @@ jobs:
              JIRA_KEY=$(cat plan-context/jira_ticket.txt)
           fi
           
-          echo "PROMPT=$PROMPT" >> $GITHUB_OUTPUT
-          echo "ROLE=$ROLE" >> $GITHUB_OUTPUT
-          echo "RUNTIME=$RUNTIME" >> $GITHUB_OUTPUT
-          echo "JIRA_KEY=$JIRA_KEY" >> $GITHUB_OUTPUT
+          {
+            echo "PROMPT<<EOF"
+            echo "$PROMPT"
+            echo "EOF"
+            echo "ROLE=$ROLE"
+            echo "RUNTIME=$RUNTIME"
+            echo "JIRA_KEY=$JIRA_KEY"
+          } >> $GITHUB_OUTPUT
 
       - name: Setup Branch
         id: setup_branch
+        env:
+          JIRA_KEY: ${{ steps.plan_context.outputs.JIRA_KEY }}
         run: |
-          JIRA_KEY="${{ steps.plan_context.outputs.JIRA_KEY }}"
           if [ -n "$JIRA_KEY" ]; then
              KEY_LOWER=$(echo "$JIRA_KEY" | tr '[:upper:]' '[:lower:]')
              BRANCH_NAME="feature/$KEY_LOWER"
@@ -373,9 +390,10 @@ jobs:
 
       - name: Prepare Implementation Prompt
         id: prep_impl
+        env:
+          BASE_PROMPT: ${{ steps.plan_context.outputs.PROMPT }}
+          ROLE: ${{ steps.plan_context.outputs.ROLE }}
         run: |
-          BASE_PROMPT="${{ steps.plan_context.outputs.PROMPT }}"
-          ROLE="${{ steps.plan_context.outputs.ROLE }}"
           CONTRACT_FILE="agent-contracts/${ROLE}.md"
           
           IMPL_PROMPT="You are the Oris Backend Engineer AI.
@@ -401,17 +419,18 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           AGENT_PROCEED: "true"
+          RUNTIME: ${{ steps.plan_context.outputs.RUNTIME }}
+          ROLE: ${{ steps.plan_context.outputs.ROLE }}
+          IMPL_PROMPT: ${{ steps.prep_impl.outputs.IMPL_PROMPT }}
         run: |
           set +e
           OUTPUT_FILE=$(mktemp)
           ERROR_FILE=$(mktemp)
           
-          RUNTIME="${{ steps.plan_context.outputs.RUNTIME }}"
-          
           ./scripts/agent.sh \
             --runtime "$RUNTIME" \
-            --role "${{ steps.plan_context.outputs.ROLE }}" \
-            "${{ steps.prep_impl.outputs.IMPL_PROMPT }}" \
+            --role "$ROLE" \
+            "$IMPL_PROMPT" \
             > "$OUTPUT_FILE" 2> "$ERROR_FILE"
           
           EXIT_CODE=$?

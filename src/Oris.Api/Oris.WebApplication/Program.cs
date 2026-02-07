@@ -1,8 +1,13 @@
+using System.Diagnostics.CodeAnalysis;
+using Oris.Application.Extensions;
 using Oris.Infrastructure.Extensions;
 
 var builder = WebApplication.CreateBuilder(args);
 
+builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
+
+builder.Services.AddControllers();
 builder.Services.AddOpenApi();
 builder.Services.AddHealthChecks();
 
@@ -15,6 +20,13 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
-app.MapHealthChecks("/health");
+app.UseAuthentication();
+app.UseAuthorization();
 
-app.Run();
+app.MapControllers();
+app.MapHealthChecks("/health").AllowAnonymous();
+
+await app.RunAsync();
+
+[ExcludeFromCodeCoverage]
+public partial class Program { }
