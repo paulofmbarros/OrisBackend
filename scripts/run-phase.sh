@@ -10,6 +10,7 @@ Examples:
   ./scripts/run-phase.sh --runtime gemini --phase plan "Plan OR-123 implementation"
   ./scripts/run-phase.sh --runtime gemini --phase implement "Proceed with implementation"
   HEADLESS=true ./scripts/run-phase.sh --runtime gemini --phase review "Review the code"
+  HEADLESS=true ./scripts/run-phase.sh --runtime gemini --phase review "Approved. Apply the proposed review changes."
 EOF
 }
 
@@ -397,6 +398,8 @@ export AGENT_RUNS_LOG_FILE="${AGENT_RUNS_LOG_FILE:-$STATE_DIR/runs.log}"
 
 # Keep phase artifacts available for audits by default.
 export AGENT_GEMINI_REVIEW_CLEANUP_REMOVE_LOGS="${AGENT_GEMINI_REVIEW_CLEANUP_REMOVE_LOGS:-false}"
+export AGENT_GEMINI_REVIEW_REQUIRE_APPROVAL="${AGENT_GEMINI_REVIEW_REQUIRE_APPROVAL:-true}"
+export AGENT_GEMINI_REVIEW_CLEANUP_REMOVE_CONTAINERS="${AGENT_GEMINI_REVIEW_CLEANUP_REMOVE_CONTAINERS:-true}"
 
 export AGENT_GEMINI_PLANNING_LOG_FILE="${AGENT_GEMINI_PLANNING_LOG_FILE:-$ARTIFACT_DIR/planning_debug.log}"
 export AGENT_GEMINI_IMPLEMENTATION_LOG_FILE="${AGENT_GEMINI_IMPLEMENTATION_LOG_FILE:-$ARTIFACT_DIR/implementation_debug.log}"

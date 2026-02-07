@@ -28,6 +28,9 @@ REQUIRE_REVIEW_JIRA_COMMENT="${AGENT_GEMINI_REQUIRE_REVIEW_JIRA_COMMENT:-true}"
 REVIEW_CLEANUP_ON_SUCCESS="${AGENT_GEMINI_REVIEW_CLEANUP_ON_SUCCESS:-true}"
 REVIEW_CLEANUP_REMOVE_LOGS="${AGENT_GEMINI_REVIEW_CLEANUP_REMOVE_LOGS:-true}"
 REVIEW_CLEANUP_REMOVE_CACHE="${AGENT_GEMINI_REVIEW_CLEANUP_REMOVE_CACHE:-false}"
+REVIEW_CLEANUP_REMOVE_CONTAINERS="${AGENT_GEMINI_REVIEW_CLEANUP_REMOVE_CONTAINERS:-true}"
+REVIEW_REQUIRE_APPROVAL="${AGENT_GEMINI_REVIEW_REQUIRE_APPROVAL:-true}"
+REVIEW_APPLY_CHANGES_OVERRIDE="${AGENT_GEMINI_REVIEW_APPLY_CHANGES:-}"
 SONAR_REVIEW_MODE="${AGENT_GEMINI_SONAR_REVIEW_MODE:-always}"
 JIRA_REVIEW_MODE="${AGENT_GEMINI_JIRA_REVIEW_MODE:-always}"
 AUX_RESUME_POLICY="${AGENT_GEMINI_AUX_RESUME_POLICY:-auto}"
@@ -222,6 +225,30 @@ EOF
   build_prompt_from_active_plan "$scoped_instruction"
 }
 
+build_review_prompt() {
+  local instruction="$1"
+  local apply_changes="$2"
+
+  if [[ "$apply_changes" == "true" ]]; then
+    build_prompt_from_active_plan "$instruction
+
+REVIEW PHASE REQUIREMENTS:
+- Review the latest implementation for bugs, regressions, architectural violations, and missing tests.
+- Apply focused fixes directly in code when needed.
+- Keep changes scoped to the ticket and avoid unrelated refactors.
+- Summarize findings and what was fixed."
+    return 0
+  fi
+
+  build_prompt_from_active_plan "$instruction
+
+REVIEW PHASE REQUIREMENTS:
+- This is proposal-only review mode. Do NOT edit files and do NOT apply any fixes yet.
+- Produce a concrete proposed change plan only (files, rationale, and expected impact).
+- Call out risks, regressions, and missing tests.
+- Wait for explicit approval before any implementation."
+}
+
 run_gemini() {
   local PROMPT="$1"
   run_gemini_with_model_fallback "$PROMPT" "$READ_ONLY_APPROVAL_MODE" ""
@@ -323,6 +350,45 @@ normalize_mode_value() {
       echo "$raw"
       ;;
   esac
+}
+
+normalize_bool_value() {
+  local raw
+  raw="$(echo "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+  case "$raw" in
+    1|true|yes|on|always) echo "true" ;;
+    *) echo "false" ;;
+  esac
+}
+
+is_review_change_approval_prompt() {
+  local prompt="$1"
+
+  if echo "$prompt" | grep -Eqi "do not|don't|without[[:space:]]+approval|until[[:space:]]+approved|plan[[:space:]]+only|proposal[[:space:]]+only"; then
+    return 1
+  fi
+
+  echo "$prompt" | grep -Eqi "approved|approve[[:space:]]+it|go[[:space:]]+ahead|apply[[:space:]]+(the[[:space:]]+)?(proposed[[:space:]]+)?(changes|fixes)|implement[[:space:]]+(the[[:space:]]+)?(proposed[[:space:]]+)?(changes|fixes)|proceed[[:space:]]+with([[:space:]]+the)?[[:space:]]+(changes|fixes|implementation)"
+}
+
+is_review_changes_allowed() {
+  local prompt="$1"
+  local require_approval
+  local override_norm
+
+  require_approval="$(normalize_bool_value "$REVIEW_REQUIRE_APPROVAL")"
+
+  if [[ -n "${REVIEW_APPLY_CHANGES_OVERRIDE:-}" ]]; then
+    override_norm="$(normalize_bool_value "$REVIEW_APPLY_CHANGES_OVERRIDE")"
+    [[ "$override_norm" == "true" ]]
+    return $?
+  fi
+
+  if [[ "$require_approval" != "true" ]]; then
+    return 0
+  fi
+
+  is_review_change_approval_prompt "$prompt"
 }
 
 should_run_sonar_review() {
@@ -1341,6 +1407,54 @@ Return exactly:
   return 1
 }
 
+run_post_review_container_cleanup() {
+  local -a ids=()
+  local removed_containers=0
+  local removed_networks=0
+  local removed_volumes=0
+  local network_output=""
+  local volume_output=""
+
+  if [[ "$(normalize_bool_value "$REVIEW_CLEANUP_REMOVE_CONTAINERS")" != "true" ]]; then
+    echo "Post-review container cleanup disabled."
+    return 0
+  fi
+
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "Docker CLI not found. Skipping container cleanup."
+    return 0
+  fi
+
+  if ! docker info >/dev/null 2>&1; then
+    echo "Docker daemon unavailable. Skipping container cleanup."
+    return 0
+  fi
+
+  mapfile -t ids < <(docker ps -aq --filter "status=exited" --filter "label=org.testcontainers=true" 2>/dev/null || true)
+  if [[ ${#ids[@]} -gt 0 ]]; then
+    if ! docker rm "${ids[@]}" >/dev/null 2>&1; then
+      echo "Failed to remove one or more exited Testcontainers containers." >&2
+      return 1
+    fi
+    removed_containers="${#ids[@]}"
+  fi
+
+  mapfile -t ids < <(docker network ls -q --filter "label=org.testcontainers=true" 2>/dev/null || true)
+  if [[ ${#ids[@]} -gt 0 ]]; then
+    network_output="$(docker network rm "${ids[@]}" 2>/dev/null || true)"
+    removed_networks="$(echo "$network_output" | sed '/^[[:space:]]*$/d' | wc -l | tr -d '[:space:]')"
+  fi
+
+  mapfile -t ids < <(docker volume ls -q --filter "label=org.testcontainers=true" 2>/dev/null || true)
+  if [[ ${#ids[@]} -gt 0 ]]; then
+    volume_output="$(docker volume rm "${ids[@]}" 2>/dev/null || true)"
+    removed_volumes="$(echo "$volume_output" | sed '/^[[:space:]]*$/d' | wc -l | tr -d '[:space:]')"
+  fi
+
+  echo "Post-review container cleanup removed $removed_containers containers, $removed_networks networks, and $removed_volumes volumes."
+  return 0
+}
+
 run_post_review_cleanup() {
   local removed_count=0
   local path
@@ -1383,6 +1497,10 @@ run_post_review_cleanup() {
     fi
   done
 
+  if ! run_post_review_container_cleanup; then
+    return 1
+  fi
+
   echo "Post-review cleanup removed $removed_count temporary files."
   return 0
 }
@@ -1396,6 +1514,16 @@ if [[ "$PHASE" == "review" ]]; then
   echo "Review mode detected."
   REVIEW_INTERACTIVE_FALLBACK_USED=false
   SONAR_STEP_EXECUTED=false
+  REVIEW_CHANGES_APPROVED=false
+  REVIEW_APPROVAL_MODE="$READ_ONLY_APPROVAL_MODE"
+
+  if is_review_changes_allowed "$USER_PROMPT"; then
+    REVIEW_CHANGES_APPROVED=true
+    REVIEW_APPROVAL_MODE="$MUTATING_APPROVAL_MODE"
+    echo "Review changes explicitly approved. Running mutating review."
+  else
+    echo "Review is running in proposal-only mode. No code changes will be applied."
+  fi
 
   if [[ "$REVIEW_VERBOSE" == "true" ]]; then
     {
@@ -1404,7 +1532,9 @@ if [[ "$PHASE" == "review" ]]; then
       echo "Prompt: $USER_PROMPT"
       echo "Branch: $(git branch --show-current 2>/dev/null || echo 'unknown')"
       echo "Ticket scope: ${ACTIVE_TICKET:-none}"
-      echo "Approval mode: $MUTATING_APPROVAL_MODE"
+      echo "Approval mode: $REVIEW_APPROVAL_MODE"
+      echo "Review approval required: $REVIEW_REQUIRE_APPROVAL"
+      echo "Review changes approved: $REVIEW_CHANGES_APPROVED"
       echo "Model chain: $GEMINI_MODELS_CSV"
       echo ""
     } > "$REVIEW_DEBUG_LOG_FILE"
@@ -1412,28 +1542,22 @@ if [[ "$PHASE" == "review" ]]; then
     echo "Verbose review logging enabled. Log: $REVIEW_DEBUG_LOG_FILE"
   fi
 
-  REVIEW_PROMPT="$(build_prompt_from_active_plan "$USER_PROMPT
-
-REVIEW PHASE REQUIREMENTS:
-- Review the latest implementation for bugs, regressions, architectural violations, and missing tests.
-- Apply focused fixes directly in code when needed.
-- Keep changes scoped to the ticket and avoid unrelated refactors.
-- Summarize findings and what was fixed.")"
+  REVIEW_PROMPT="$(build_review_prompt "$USER_PROMPT" "$REVIEW_CHANGES_APPROVED")"
 
   if is_interactive_mode_always; then
     echo "Opening Gemini CLI in interactive mode for review."
-    if run_gemini_interactive "$REVIEW_PROMPT" "$MUTATING_APPROVAL_MODE"; then
+    if run_gemini_interactive "$REVIEW_PROMPT" "$REVIEW_APPROVAL_MODE"; then
       EXIT_CODE=0
     else
       EXIT_CODE=$?
     fi
   else
-    if run_and_maybe_log run_gemini_resume_headless "$REVIEW_PROMPT"; then
+    if run_and_maybe_log run_gemini_with_model_fallback "$REVIEW_PROMPT" "$REVIEW_APPROVAL_MODE" "latest"; then
       EXIT_CODE=0
     else
       echo "Session resumption failed. Running review with full context."
       debug_log "Review resume failed. Falling back to full-context review run."
-      if run_and_maybe_log run_gemini_headless "$REVIEW_PROMPT"; then
+      if run_and_maybe_log run_gemini_with_model_fallback "$REVIEW_PROMPT" "$REVIEW_APPROVAL_MODE" ""; then
         EXIT_CODE=0
       else
         EXIT_CODE=$?
@@ -1444,7 +1568,7 @@ REVIEW PHASE REQUIREMENTS:
       echo "Review failed in non-interactive mode. Opening Gemini CLI interactively."
       debug_log "Switching to interactive review fallback."
       REVIEW_INTERACTIVE_FALLBACK_USED=true
-      if run_gemini_interactive "$REVIEW_PROMPT" "$MUTATING_APPROVAL_MODE"; then
+      if run_gemini_interactive "$REVIEW_PROMPT" "$REVIEW_APPROVAL_MODE"; then
         EXIT_CODE=0
       else
         EXIT_CODE=$?
@@ -1452,68 +1576,74 @@ REVIEW PHASE REQUIREMENTS:
     fi
   fi
 
-  if [[ $EXIT_CODE -eq 0 ]] && [[ "$REVIEW_INTERACTIVE_FALLBACK_USED" != "true" ]] && ! is_interactive_mode_always; then
-    if ! run_and_maybe_log run_review_checks_with_fix_loop 2; then
-      echo "Review checks failed. See log: $REVIEW_LOG_FILE" >&2
-      EXIT_CODE=1
-    fi
-  fi
-
-  if [[ $EXIT_CODE -eq 0 ]] && [[ "$REVIEW_INTERACTIVE_FALLBACK_USED" != "true" ]] && ! is_interactive_mode_always; then
-    if should_run_sonar_review "$USER_PROMPT"; then
-      echo "Running Sonar MCP review. Log: $SONAR_MCP_LOG_FILE"
-      if ! run_and_maybe_log run_mcp_step_with_retry "Sonar MCP review" "$SONAR_MCP_LOG_FILE" run_sonar_mcp_review; then
-        echo "Sonar MCP review failed." >&2
+  if [[ "$REVIEW_CHANGES_APPROVED" == "true" ]]; then
+    if [[ $EXIT_CODE -eq 0 ]] && [[ "$REVIEW_INTERACTIVE_FALLBACK_USED" != "true" ]] && ! is_interactive_mode_always; then
+      if ! run_and_maybe_log run_review_checks_with_fix_loop 2; then
+        echo "Review checks failed. See log: $REVIEW_LOG_FILE" >&2
         EXIT_CODE=1
-      else
-        SONAR_STEP_EXECUTED=true
-        echo "Sonar MCP review completed. Log: $SONAR_MCP_LOG_FILE"
       fi
-    else
-      echo "Skipping Sonar MCP review (mode: $(normalize_mode_value "$SONAR_REVIEW_MODE"))."
     fi
-  fi
 
-  # Re-verify local health after any fixes done during Sonar MCP review.
-  if [[ $EXIT_CODE -eq 0 ]] && [[ "$SONAR_STEP_EXECUTED" == "true" ]] && [[ "$REVIEW_INTERACTIVE_FALLBACK_USED" != "true" ]] && ! is_interactive_mode_always; then
-    if ! run_and_maybe_log run_local_review_checks; then
-      echo "Post-Sonar local checks failed. See log: $REVIEW_LOG_FILE" >&2
-      EXIT_CODE=1
-    else
-      echo "Post-Sonar review checks passed."
-    fi
-  fi
-
-  if [[ $EXIT_CODE -eq 0 ]]; then
-    if should_run_jira_review_update "$USER_PROMPT"; then
-      REVIEW_TICKET="$(resolve_effective_ticket_id)"
-      if [[ -z "$REVIEW_TICKET" ]]; then
-        echo "Unable to resolve Jira ticket for post-review update." >&2
-        if [[ "$REQUIRE_REVIEW_JIRA_COMMENT" == "true" ]]; then
+    if [[ $EXIT_CODE -eq 0 ]] && [[ "$REVIEW_INTERACTIVE_FALLBACK_USED" != "true" ]] && ! is_interactive_mode_always; then
+      if should_run_sonar_review "$USER_PROMPT"; then
+        echo "Running Sonar MCP review. Log: $SONAR_MCP_LOG_FILE"
+        if ! run_and_maybe_log run_mcp_step_with_retry "Sonar MCP review" "$SONAR_MCP_LOG_FILE" run_sonar_mcp_review; then
+          echo "Sonar MCP review failed." >&2
           EXIT_CODE=1
+        else
+          SONAR_STEP_EXECUTED=true
+          echo "Sonar MCP review completed. Log: $SONAR_MCP_LOG_FILE"
         fi
       else
-        echo "Posting Jira review update for $REVIEW_TICKET. Log: $JIRA_REVIEW_LOG_FILE"
-        if run_and_maybe_log run_mcp_step_with_retry "Jira review update" "$JIRA_REVIEW_LOG_FILE" run_post_review_jira_update "$REVIEW_TICKET"; then
-          echo "Jira review update posted to $REVIEW_TICKET."
-        else
-          echo "Failed to post Jira review update to $REVIEW_TICKET. See $JIRA_REVIEW_LOG_FILE" >&2
+        echo "Skipping Sonar MCP review (mode: $(normalize_mode_value "$SONAR_REVIEW_MODE"))."
+      fi
+    fi
+
+    # Re-verify local health after any fixes done during Sonar MCP review.
+    if [[ $EXIT_CODE -eq 0 ]] && [[ "$SONAR_STEP_EXECUTED" == "true" ]] && [[ "$REVIEW_INTERACTIVE_FALLBACK_USED" != "true" ]] && ! is_interactive_mode_always; then
+      if ! run_and_maybe_log run_local_review_checks; then
+        echo "Post-Sonar local checks failed. See log: $REVIEW_LOG_FILE" >&2
+        EXIT_CODE=1
+      else
+        echo "Post-Sonar review checks passed."
+      fi
+    fi
+
+    if [[ $EXIT_CODE -eq 0 ]]; then
+      if should_run_jira_review_update "$USER_PROMPT"; then
+        REVIEW_TICKET="$(resolve_effective_ticket_id)"
+        if [[ -z "$REVIEW_TICKET" ]]; then
+          echo "Unable to resolve Jira ticket for post-review update." >&2
           if [[ "$REQUIRE_REVIEW_JIRA_COMMENT" == "true" ]]; then
             EXIT_CODE=1
           fi
+        else
+          echo "Posting Jira review update for $REVIEW_TICKET. Log: $JIRA_REVIEW_LOG_FILE"
+          if run_and_maybe_log run_mcp_step_with_retry "Jira review update" "$JIRA_REVIEW_LOG_FILE" run_post_review_jira_update "$REVIEW_TICKET"; then
+            echo "Jira review update posted to $REVIEW_TICKET."
+          else
+            echo "Failed to post Jira review update to $REVIEW_TICKET. See $JIRA_REVIEW_LOG_FILE" >&2
+            if [[ "$REQUIRE_REVIEW_JIRA_COMMENT" == "true" ]]; then
+              EXIT_CODE=1
+            fi
+          fi
         fi
+      elif [[ "$POST_REVIEW_JIRA_COMMENT" == "true" ]]; then
+        echo "Skipping Jira review update (mode: $(normalize_mode_value "$JIRA_REVIEW_MODE"))."
       fi
-    elif [[ "$POST_REVIEW_JIRA_COMMENT" == "true" ]]; then
-      echo "Skipping Jira review update (mode: $(normalize_mode_value "$JIRA_REVIEW_MODE"))."
     fi
+  else
+    echo "Skipping automated checks and MCP review updates in proposal-only review mode."
   fi
 
-  if [[ $EXIT_CODE -eq 0 ]] && [[ "$REVIEW_CLEANUP_ON_SUCCESS" == "true" ]]; then
+  if [[ $EXIT_CODE -eq 0 ]] && [[ "$REVIEW_CHANGES_APPROVED" == "true" ]] && [[ "$REVIEW_CLEANUP_ON_SUCCESS" == "true" ]]; then
     echo "Running post-review cleanup."
     if ! run_post_review_cleanup; then
       echo "Post-review cleanup failed." >&2
       EXIT_CODE=1
     fi
+  elif [[ $EXIT_CODE -eq 0 ]] && [[ "$REVIEW_CHANGES_APPROVED" != "true" ]]; then
+    echo "Skipping post-review cleanup in proposal-only review mode."
   fi
 
   exit $EXIT_CODE
