@@ -9,10 +9,10 @@ USER_PROMPT="$2"
 CACHE_DIR="$(dirname "$0")/../../tmp/cache"
 STATE_DIR="$(dirname "$0")/../../tmp/state"
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-REVIEW_LOG_FILE="$STATE_DIR/review_checks.log"
-SONAR_MCP_LOG_FILE="$STATE_DIR/sonar_mcp_review.log"
-JIRA_REVIEW_LOG_FILE="$STATE_DIR/jira_review_update.log"
-MCP_SERVERS="notion,atlassian-rovo-mcp-server,sonarqube"
+REVIEW_LOG_FILE="${AGENT_REVIEW_LOG_FILE:-$STATE_DIR/review_checks.log}"
+SONAR_MCP_LOG_FILE="${AGENT_SONAR_MCP_LOG_FILE:-$STATE_DIR/sonar_mcp_review.log}"
+JIRA_REVIEW_LOG_FILE="${AGENT_JIRA_REVIEW_LOG_FILE:-$STATE_DIR/jira_review_update.log}"
+MCP_SERVERS="${AGENT_MCP_SERVERS:-notion,atlassian-rovo-mcp-server,sonarqube}"
 READ_ONLY_APPROVAL_MODE="${AGENT_GEMINI_READ_ONLY_APPROVAL_MODE:-default}"
 MUTATING_APPROVAL_MODE="${AGENT_GEMINI_MUTATING_APPROVAL_MODE:-yolo}"
 GEMINI_MODELS_CSV="${AGENT_GEMINI_MODELS:-default}"
@@ -28,8 +28,11 @@ REQUIRE_REVIEW_JIRA_COMMENT="${AGENT_GEMINI_REQUIRE_REVIEW_JIRA_COMMENT:-true}"
 REVIEW_CLEANUP_ON_SUCCESS="${AGENT_GEMINI_REVIEW_CLEANUP_ON_SUCCESS:-true}"
 REVIEW_CLEANUP_REMOVE_LOGS="${AGENT_GEMINI_REVIEW_CLEANUP_REMOVE_LOGS:-true}"
 REVIEW_CLEANUP_REMOVE_CACHE="${AGENT_GEMINI_REVIEW_CLEANUP_REMOVE_CACHE:-false}"
-SONAR_REVIEW_MODE="${AGENT_GEMINI_SONAR_REVIEW_MODE:-auto}"
-JIRA_REVIEW_MODE="${AGENT_GEMINI_JIRA_REVIEW_MODE:-auto}"
+REVIEW_CLEANUP_REMOVE_CONTAINERS="${AGENT_GEMINI_REVIEW_CLEANUP_REMOVE_CONTAINERS:-true}"
+REVIEW_REQUIRE_APPROVAL="${AGENT_GEMINI_REVIEW_REQUIRE_APPROVAL:-true}"
+REVIEW_APPLY_CHANGES_OVERRIDE="${AGENT_GEMINI_REVIEW_APPLY_CHANGES:-}"
+SONAR_REVIEW_MODE="${AGENT_GEMINI_SONAR_REVIEW_MODE:-always}"
+JIRA_REVIEW_MODE="${AGENT_GEMINI_JIRA_REVIEW_MODE:-always}"
 AUX_RESUME_POLICY="${AGENT_GEMINI_AUX_RESUME_POLICY:-auto}"
 AUX_RESUME_MAX_AGE_SECONDS="${AGENT_GEMINI_AUX_RESUME_MAX_AGE_SECONDS:-14400}"
 IMPLEMENTATION_USE_RESUME="${AGENT_GEMINI_IMPLEMENTATION_USE_RESUME:-false}"
@@ -37,6 +40,10 @@ GEMINI_ATTEMPT_TIMEOUT_SECONDS="${AGENT_GEMINI_ATTEMPT_TIMEOUT_SECONDS:-0}"
 GEMINI_INTERACTIVE_MODE="${AGENT_GEMINI_INTERACTIVE_MODE:-never}"
 GEMINI_INTERACTIVE_MODEL="${AGENT_GEMINI_INTERACTIVE_MODEL:-}"
 ACTIVE_TICKET="${AGENT_ACTIVE_TICKET:-}"
+PHASE_OVERRIDE="${AGENT_PHASE:-}"
+MCP_RETRY_ATTEMPTS="${AGENT_MCP_RETRY_ATTEMPTS:-2}"
+MCP_RETRY_BASE_DELAY_SECONDS="${AGENT_MCP_RETRY_BASE_DELAY_SECONDS:-2}"
+REVIEW_ISOLATE_STARTUP_DIR="${AGENT_REVIEW_ISOLATE_STARTUP_DIR:-true}"
 ACTIVE_DEBUG_LOG_FILE=""
 AUX_CACHE_DIR="$CACHE_DIR/review_aux"
 
@@ -218,6 +225,30 @@ EOF
   build_prompt_from_active_plan "$scoped_instruction"
 }
 
+build_review_prompt() {
+  local instruction="$1"
+  local apply_changes="$2"
+
+  if [[ "$apply_changes" == "true" ]]; then
+    build_prompt_from_active_plan "$instruction
+
+REVIEW PHASE REQUIREMENTS:
+- Review the latest implementation for bugs, regressions, architectural violations, and missing tests.
+- Apply focused fixes directly in code when needed.
+- Keep changes scoped to the ticket and avoid unrelated refactors.
+- Summarize findings and what was fixed."
+    return 0
+  fi
+
+  build_prompt_from_active_plan "$instruction
+
+REVIEW PHASE REQUIREMENTS:
+- This is proposal-only review mode. Do NOT edit files and do NOT apply any fixes yet.
+- Produce a concrete proposed change plan only (files, rationale, and expected impact).
+- Call out risks, regressions, and missing tests.
+- Wait for explicit approval before any implementation."
+}
+
 run_gemini() {
   local PROMPT="$1"
   run_gemini_with_model_fallback "$PROMPT" "$READ_ONLY_APPROVAL_MODE" ""
@@ -321,6 +352,45 @@ normalize_mode_value() {
   esac
 }
 
+normalize_bool_value() {
+  local raw
+  raw="$(echo "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+  case "$raw" in
+    1|true|yes|on|always) echo "true" ;;
+    *) echo "false" ;;
+  esac
+}
+
+is_review_change_approval_prompt() {
+  local prompt="$1"
+
+  if echo "$prompt" | grep -Eqi "do not|don't|without[[:space:]]+approval|until[[:space:]]+approved|plan[[:space:]]+only|proposal[[:space:]]+only"; then
+    return 1
+  fi
+
+  echo "$prompt" | grep -Eqi "approved|approve[[:space:]]+it|go[[:space:]]+ahead|apply[[:space:]]+(the[[:space:]]+)?(proposed[[:space:]]+)?(changes|fixes)|implement[[:space:]]+(the[[:space:]]+)?(proposed[[:space:]]+)?(changes|fixes)|proceed[[:space:]]+with([[:space:]]+the)?[[:space:]]+(changes|fixes|implementation)"
+}
+
+is_review_changes_allowed() {
+  local prompt="$1"
+  local require_approval
+  local override_norm
+
+  require_approval="$(normalize_bool_value "$REVIEW_REQUIRE_APPROVAL")"
+
+  if [[ -n "${REVIEW_APPLY_CHANGES_OVERRIDE:-}" ]]; then
+    override_norm="$(normalize_bool_value "$REVIEW_APPLY_CHANGES_OVERRIDE")"
+    [[ "$override_norm" == "true" ]]
+    return $?
+  fi
+
+  if [[ "$require_approval" != "true" ]]; then
+    return 0
+  fi
+
+  is_review_change_approval_prompt "$prompt"
+}
+
 should_run_sonar_review() {
   local prompt="$1"
   local mode
@@ -329,6 +399,7 @@ should_run_sonar_review() {
   case "$mode" in
     always) return 0 ;;
     never) return 1 ;;
+    *) ;;
   esac
 
   echo "$prompt" | grep -Eqi "sonar|sonarqube|quality gate|security hotspot|coverage|code smells|vulnerabilit"
@@ -346,6 +417,7 @@ should_run_jira_review_update() {
   case "$mode" in
     always) return 0 ;;
     never) return 1 ;;
+    *) ;;
   esac
 
   echo "$prompt" | grep -Eqi "jira|atlassian|ticket update|post( a)? comment|review update"
@@ -496,6 +568,8 @@ should_attempt_aux_resume() {
       ;;
     never)
       return 1
+      ;;
+    *)
       ;;
   esac
 
@@ -851,6 +925,95 @@ is_proceed_request() {
   echo "$prompt" | grep -Eqi "proceed[[:space:]]+with([[:space:]]+the)?[[:space:]]+implementation"
 }
 
+normalize_phase_token() {
+  local raw
+  raw="$(echo "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+
+  case "$raw" in
+    plan|planning) echo "plan" ;;
+    implement|implementation|proceed) echo "implement" ;;
+    review|qa) echo "review" ;;
+    *) echo "" ;;
+  esac
+}
+
+resolve_execution_phase() {
+  local normalized
+  normalized="$(normalize_phase_token "$PHASE_OVERRIDE")"
+  if [[ -n "$normalized" ]]; then
+    echo "$normalized"
+    return 0
+  fi
+
+  if [[ "$REVIEW_MODE" == "true" ]] || echo "$USER_PROMPT" | grep -Eqi "^[[:space:]]*review( the)? code([[:space:]]|$)"; then
+    echo "review"
+    return 0
+  fi
+
+  if [[ "$PROCEED_MODE" == "true" ]] || is_proceed_request "$USER_PROMPT"; then
+    echo "implement"
+    return 0
+  fi
+
+  echo "plan"
+}
+
+is_transient_mcp_failure_text() {
+  local text="$1"
+  echo "$text" | grep -Eqi "fetch failed|connection closed|connection reset|connection refused|timed out|timeout|resource exhausted|429|temporarily unavailable|try again|retry|service unavailable|broken pipe|econn"
+}
+
+run_mcp_step_with_retry() {
+  local step_name="$1"
+  local log_file="$2"
+  shift 2
+  local max_attempts="$MCP_RETRY_ATTEMPTS"
+  local delay_seconds="$MCP_RETRY_BASE_DELAY_SECONDS"
+  local attempt
+  local exit_code=0
+  local snippet=""
+
+  if ! [[ "$max_attempts" =~ ^[0-9]+$ ]] || [[ "$max_attempts" -lt 1 ]]; then
+    max_attempts=2
+  fi
+  if ! [[ "$delay_seconds" =~ ^[0-9]+$ ]] || [[ "$delay_seconds" -lt 1 ]]; then
+    delay_seconds=2
+  fi
+
+  for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+    if "$@"; then
+      return 0
+    fi
+    exit_code=$?
+    snippet="$(tail -n 60 "$log_file" 2>/dev/null || true)"
+
+    if [[ "$attempt" -ge "$max_attempts" ]]; then
+      echo "$step_name failed after $attempt attempt(s)." >&2
+      if [[ -n "$snippet" ]]; then
+        echo "$step_name output snippet:" >&2
+        echo "$snippet" >&2
+      fi
+      echo "Suggestion: verify MCP auth/connectivity and rerun this phase." >&2
+      return "$exit_code"
+    fi
+
+    if ! is_transient_mcp_failure_text "$snippet"; then
+      echo "$step_name failed with a non-transient error (attempt $attempt/$max_attempts)." >&2
+      if [[ -n "$snippet" ]]; then
+        echo "$step_name output snippet:" >&2
+        echo "$snippet" >&2
+      fi
+      return "$exit_code"
+    fi
+
+    echo "$step_name failed due to transient MCP issue (attempt $attempt/$max_attempts). Retrying in ${delay_seconds}s..." >&2
+    sleep "$delay_seconds"
+    delay_seconds=$((delay_seconds * 2))
+  done
+
+  return "$exit_code"
+}
+
 resolve_dotnet_cmd() {
   if [[ -x "/Users/paulofmbarros/.dotnet/dotnet" ]]; then
     echo "/Users/paulofmbarros/.dotnet/dotnet"
@@ -865,10 +1028,18 @@ resolve_dotnet_cmd() {
 
 run_local_review_checks() {
   local dotnet_cmd
+  local startup_dir="$REPO_ROOT"
+  local created_startup_dir=false
+  local solution_path="$REPO_ROOT/OrisBackend.sln"
   dotnet_cmd="$(resolve_dotnet_cmd)" || {
     echo "dotnet CLI not found. Unable to run review checks." >&2
     return 1
   }
+
+  if [[ "$REVIEW_ISOLATE_STARTUP_DIR" == "true" ]]; then
+    startup_dir="$(mktemp -d "$STATE_DIR/dotnet-startup.XXXXXX" 2>/dev/null || mktemp -d)"
+    created_startup_dir=true
+  fi
 
   : > "$REVIEW_LOG_FILE"
   echo "Running review checks. Full log: $REVIEW_LOG_FILE"
@@ -876,23 +1047,41 @@ run_local_review_checks() {
   {
     echo "== Housekeeping and Review Checks =="
     echo "Repository: $REPO_ROOT"
+    echo "MSBuild startup directory: $startup_dir"
+    echo "Review startup isolation: $REVIEW_ISOLATE_STARTUP_DIR"
     echo ""
     echo "[1/3] dotnet restore"
   } >> "$REVIEW_LOG_FILE"
-  "$dotnet_cmd" restore OrisBackend.sln >> "$REVIEW_LOG_FILE" 2>&1 || return 1
+  (cd "$startup_dir" && "$dotnet_cmd" restore "$solution_path") >> "$REVIEW_LOG_FILE" 2>&1 || {
+    [[ "$created_startup_dir" == "true" ]] && rm -rf "$startup_dir"
+    return 1
+  }
 
   {
     echo ""
     echo "[2/3] dotnet format"
   } >> "$REVIEW_LOG_FILE"
-  "$dotnet_cmd" format OrisBackend.sln >> "$REVIEW_LOG_FILE" 2>&1 || return 1
+  (cd "$startup_dir" && "$dotnet_cmd" format "$solution_path") >> "$REVIEW_LOG_FILE" 2>&1 || {
+    [[ "$created_startup_dir" == "true" ]] && rm -rf "$startup_dir"
+    return 1
+  }
 
   {
     echo ""
     echo "[3/3] dotnet build and test"
   } >> "$REVIEW_LOG_FILE"
-  "$dotnet_cmd" build OrisBackend.sln --configuration Release >> "$REVIEW_LOG_FILE" 2>&1 || return 1
-  "$dotnet_cmd" test OrisBackend.sln --no-build --configuration Release >> "$REVIEW_LOG_FILE" 2>&1 || return 1
+  (cd "$startup_dir" && "$dotnet_cmd" build "$solution_path" --configuration Release) >> "$REVIEW_LOG_FILE" 2>&1 || {
+    [[ "$created_startup_dir" == "true" ]] && rm -rf "$startup_dir"
+    return 1
+  }
+  (cd "$startup_dir" && "$dotnet_cmd" test "$solution_path" --no-build --configuration Release) >> "$REVIEW_LOG_FILE" 2>&1 || {
+    [[ "$created_startup_dir" == "true" ]] && rm -rf "$startup_dir"
+    return 1
+  }
+
+  if [[ "$created_startup_dir" == "true" ]]; then
+    rm -rf "$startup_dir"
+  fi
 
   return 0
 }
@@ -1218,6 +1407,54 @@ Return exactly:
   return 1
 }
 
+run_post_review_container_cleanup() {
+  local -a ids=()
+  local removed_containers=0
+  local removed_networks=0
+  local removed_volumes=0
+  local network_output=""
+  local volume_output=""
+
+  if [[ "$(normalize_bool_value "$REVIEW_CLEANUP_REMOVE_CONTAINERS")" != "true" ]]; then
+    echo "Post-review container cleanup disabled."
+    return 0
+  fi
+
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "Docker CLI not found. Skipping container cleanup."
+    return 0
+  fi
+
+  if ! docker info >/dev/null 2>&1; then
+    echo "Docker daemon unavailable. Skipping container cleanup."
+    return 0
+  fi
+
+  mapfile -t ids < <(docker ps -aq --filter "status=exited" --filter "label=org.testcontainers=true" 2>/dev/null || true)
+  if [[ ${#ids[@]} -gt 0 ]]; then
+    if ! docker rm "${ids[@]}" >/dev/null 2>&1; then
+      echo "Failed to remove one or more exited Testcontainers containers." >&2
+      return 1
+    fi
+    removed_containers="${#ids[@]}"
+  fi
+
+  mapfile -t ids < <(docker network ls -q --filter "label=org.testcontainers=true" 2>/dev/null || true)
+  if [[ ${#ids[@]} -gt 0 ]]; then
+    network_output="$(docker network rm "${ids[@]}" 2>/dev/null || true)"
+    removed_networks="$(echo "$network_output" | sed '/^[[:space:]]*$/d' | wc -l | tr -d '[:space:]')"
+  fi
+
+  mapfile -t ids < <(docker volume ls -q --filter "label=org.testcontainers=true" 2>/dev/null || true)
+  if [[ ${#ids[@]} -gt 0 ]]; then
+    volume_output="$(docker volume rm "${ids[@]}" 2>/dev/null || true)"
+    removed_volumes="$(echo "$volume_output" | sed '/^[[:space:]]*$/d' | wc -l | tr -d '[:space:]')"
+  fi
+
+  echo "Post-review container cleanup removed $removed_containers containers, $removed_networks networks, and $removed_volumes volumes."
+  return 0
+}
+
 run_post_review_cleanup() {
   local removed_count=0
   local path
@@ -1260,18 +1497,33 @@ run_post_review_cleanup() {
     fi
   done
 
+  if ! run_post_review_container_cleanup; then
+    return 1
+  fi
+
   echo "Post-review cleanup removed $removed_count temporary files."
   return 0
 }
 
 PROCEED_MODE="${AGENT_PROCEED:-false}"
 REVIEW_MODE="${AGENT_REVIEW:-false}"
+PHASE="$(resolve_execution_phase)"
 
-if [[ "$REVIEW_MODE" == "true" ]] || echo "$USER_PROMPT" | grep -Eqi "^[[:space:]]*review( the)? code([[:space:]]|$)"; then
+if [[ "$PHASE" == "review" ]]; then
   # --- REVIEW MODE ---
   echo "Review mode detected."
   REVIEW_INTERACTIVE_FALLBACK_USED=false
   SONAR_STEP_EXECUTED=false
+  REVIEW_CHANGES_APPROVED=false
+  REVIEW_APPROVAL_MODE="$READ_ONLY_APPROVAL_MODE"
+
+  if is_review_changes_allowed "$USER_PROMPT"; then
+    REVIEW_CHANGES_APPROVED=true
+    REVIEW_APPROVAL_MODE="$MUTATING_APPROVAL_MODE"
+    echo "Review changes explicitly approved. Running mutating review."
+  else
+    echo "Review is running in proposal-only mode. No code changes will be applied."
+  fi
 
   if [[ "$REVIEW_VERBOSE" == "true" ]]; then
     {
@@ -1280,7 +1532,9 @@ if [[ "$REVIEW_MODE" == "true" ]] || echo "$USER_PROMPT" | grep -Eqi "^[[:space:
       echo "Prompt: $USER_PROMPT"
       echo "Branch: $(git branch --show-current 2>/dev/null || echo 'unknown')"
       echo "Ticket scope: ${ACTIVE_TICKET:-none}"
-      echo "Approval mode: $MUTATING_APPROVAL_MODE"
+      echo "Approval mode: $REVIEW_APPROVAL_MODE"
+      echo "Review approval required: $REVIEW_REQUIRE_APPROVAL"
+      echo "Review changes approved: $REVIEW_CHANGES_APPROVED"
       echo "Model chain: $GEMINI_MODELS_CSV"
       echo ""
     } > "$REVIEW_DEBUG_LOG_FILE"
@@ -1288,28 +1542,22 @@ if [[ "$REVIEW_MODE" == "true" ]] || echo "$USER_PROMPT" | grep -Eqi "^[[:space:
     echo "Verbose review logging enabled. Log: $REVIEW_DEBUG_LOG_FILE"
   fi
 
-  REVIEW_PROMPT="$(build_prompt_from_active_plan "$USER_PROMPT
-
-REVIEW PHASE REQUIREMENTS:
-- Review the latest implementation for bugs, regressions, architectural violations, and missing tests.
-- Apply focused fixes directly in code when needed.
-- Keep changes scoped to the ticket and avoid unrelated refactors.
-- Summarize findings and what was fixed.")"
+  REVIEW_PROMPT="$(build_review_prompt "$USER_PROMPT" "$REVIEW_CHANGES_APPROVED")"
 
   if is_interactive_mode_always; then
     echo "Opening Gemini CLI in interactive mode for review."
-    if run_gemini_interactive "$REVIEW_PROMPT" "$MUTATING_APPROVAL_MODE"; then
+    if run_gemini_interactive "$REVIEW_PROMPT" "$REVIEW_APPROVAL_MODE"; then
       EXIT_CODE=0
     else
       EXIT_CODE=$?
     fi
   else
-    if run_and_maybe_log run_gemini_resume_headless "$REVIEW_PROMPT"; then
+    if run_and_maybe_log run_gemini_with_model_fallback "$REVIEW_PROMPT" "$REVIEW_APPROVAL_MODE" "latest"; then
       EXIT_CODE=0
     else
       echo "Session resumption failed. Running review with full context."
       debug_log "Review resume failed. Falling back to full-context review run."
-      if run_and_maybe_log run_gemini_headless "$REVIEW_PROMPT"; then
+      if run_and_maybe_log run_gemini_with_model_fallback "$REVIEW_PROMPT" "$REVIEW_APPROVAL_MODE" ""; then
         EXIT_CODE=0
       else
         EXIT_CODE=$?
@@ -1320,7 +1568,7 @@ REVIEW PHASE REQUIREMENTS:
       echo "Review failed in non-interactive mode. Opening Gemini CLI interactively."
       debug_log "Switching to interactive review fallback."
       REVIEW_INTERACTIVE_FALLBACK_USED=true
-      if run_gemini_interactive "$REVIEW_PROMPT" "$MUTATING_APPROVAL_MODE"; then
+      if run_gemini_interactive "$REVIEW_PROMPT" "$REVIEW_APPROVAL_MODE"; then
         EXIT_CODE=0
       else
         EXIT_CODE=$?
@@ -1328,73 +1576,79 @@ REVIEW PHASE REQUIREMENTS:
     fi
   fi
 
-  if [[ $EXIT_CODE -eq 0 ]] && [[ "$REVIEW_INTERACTIVE_FALLBACK_USED" != "true" ]] && ! is_interactive_mode_always; then
-    if ! run_and_maybe_log run_review_checks_with_fix_loop 2; then
-      echo "Review checks failed. See log: $REVIEW_LOG_FILE" >&2
-      EXIT_CODE=1
-    fi
-  fi
-
-  if [[ $EXIT_CODE -eq 0 ]] && [[ "$REVIEW_INTERACTIVE_FALLBACK_USED" != "true" ]] && ! is_interactive_mode_always; then
-    if should_run_sonar_review "$USER_PROMPT"; then
-      echo "Running Sonar MCP review. Log: $SONAR_MCP_LOG_FILE"
-      if ! run_and_maybe_log run_sonar_mcp_review; then
-        echo "Sonar MCP review failed." >&2
+  if [[ "$REVIEW_CHANGES_APPROVED" == "true" ]]; then
+    if [[ $EXIT_CODE -eq 0 ]] && [[ "$REVIEW_INTERACTIVE_FALLBACK_USED" != "true" ]] && ! is_interactive_mode_always; then
+      if ! run_and_maybe_log run_review_checks_with_fix_loop 2; then
+        echo "Review checks failed. See log: $REVIEW_LOG_FILE" >&2
         EXIT_CODE=1
-      else
-        SONAR_STEP_EXECUTED=true
-        echo "Sonar MCP review completed. Log: $SONAR_MCP_LOG_FILE"
       fi
-    else
-      echo "Skipping Sonar MCP review (mode: $(normalize_mode_value "$SONAR_REVIEW_MODE"))."
     fi
-  fi
 
-  # Re-verify local health after any fixes done during Sonar MCP review.
-  if [[ $EXIT_CODE -eq 0 ]] && [[ "$SONAR_STEP_EXECUTED" == "true" ]] && [[ "$REVIEW_INTERACTIVE_FALLBACK_USED" != "true" ]] && ! is_interactive_mode_always; then
-    if ! run_and_maybe_log run_local_review_checks; then
-      echo "Post-Sonar local checks failed. See log: $REVIEW_LOG_FILE" >&2
-      EXIT_CODE=1
-    else
-      echo "Post-Sonar review checks passed."
-    fi
-  fi
-
-  if [[ $EXIT_CODE -eq 0 ]]; then
-    if should_run_jira_review_update "$USER_PROMPT"; then
-      REVIEW_TICKET="$(resolve_effective_ticket_id)"
-      if [[ -z "$REVIEW_TICKET" ]]; then
-        echo "Unable to resolve Jira ticket for post-review update." >&2
-        if [[ "$REQUIRE_REVIEW_JIRA_COMMENT" == "true" ]]; then
+    if [[ $EXIT_CODE -eq 0 ]] && [[ "$REVIEW_INTERACTIVE_FALLBACK_USED" != "true" ]] && ! is_interactive_mode_always; then
+      if should_run_sonar_review "$USER_PROMPT"; then
+        echo "Running Sonar MCP review. Log: $SONAR_MCP_LOG_FILE"
+        if ! run_and_maybe_log run_mcp_step_with_retry "Sonar MCP review" "$SONAR_MCP_LOG_FILE" run_sonar_mcp_review; then
+          echo "Sonar MCP review failed." >&2
           EXIT_CODE=1
+        else
+          SONAR_STEP_EXECUTED=true
+          echo "Sonar MCP review completed. Log: $SONAR_MCP_LOG_FILE"
         fi
       else
-        echo "Posting Jira review update for $REVIEW_TICKET. Log: $JIRA_REVIEW_LOG_FILE"
-        if run_and_maybe_log run_post_review_jira_update "$REVIEW_TICKET"; then
-          echo "Jira review update posted to $REVIEW_TICKET."
-        else
-          echo "Failed to post Jira review update to $REVIEW_TICKET. See $JIRA_REVIEW_LOG_FILE" >&2
+        echo "Skipping Sonar MCP review (mode: $(normalize_mode_value "$SONAR_REVIEW_MODE"))."
+      fi
+    fi
+
+    # Re-verify local health after any fixes done during Sonar MCP review.
+    if [[ $EXIT_CODE -eq 0 ]] && [[ "$SONAR_STEP_EXECUTED" == "true" ]] && [[ "$REVIEW_INTERACTIVE_FALLBACK_USED" != "true" ]] && ! is_interactive_mode_always; then
+      if ! run_and_maybe_log run_local_review_checks; then
+        echo "Post-Sonar local checks failed. See log: $REVIEW_LOG_FILE" >&2
+        EXIT_CODE=1
+      else
+        echo "Post-Sonar review checks passed."
+      fi
+    fi
+
+    if [[ $EXIT_CODE -eq 0 ]]; then
+      if should_run_jira_review_update "$USER_PROMPT"; then
+        REVIEW_TICKET="$(resolve_effective_ticket_id)"
+        if [[ -z "$REVIEW_TICKET" ]]; then
+          echo "Unable to resolve Jira ticket for post-review update." >&2
           if [[ "$REQUIRE_REVIEW_JIRA_COMMENT" == "true" ]]; then
             EXIT_CODE=1
           fi
+        else
+          echo "Posting Jira review update for $REVIEW_TICKET. Log: $JIRA_REVIEW_LOG_FILE"
+          if run_and_maybe_log run_mcp_step_with_retry "Jira review update" "$JIRA_REVIEW_LOG_FILE" run_post_review_jira_update "$REVIEW_TICKET"; then
+            echo "Jira review update posted to $REVIEW_TICKET."
+          else
+            echo "Failed to post Jira review update to $REVIEW_TICKET. See $JIRA_REVIEW_LOG_FILE" >&2
+            if [[ "$REQUIRE_REVIEW_JIRA_COMMENT" == "true" ]]; then
+              EXIT_CODE=1
+            fi
+          fi
         fi
+      elif [[ "$POST_REVIEW_JIRA_COMMENT" == "true" ]]; then
+        echo "Skipping Jira review update (mode: $(normalize_mode_value "$JIRA_REVIEW_MODE"))."
       fi
-    elif [[ "$POST_REVIEW_JIRA_COMMENT" == "true" ]]; then
-      echo "Skipping Jira review update (mode: $(normalize_mode_value "$JIRA_REVIEW_MODE"))."
     fi
+  else
+    echo "Skipping automated checks and MCP review updates in proposal-only review mode."
   fi
 
-  if [[ $EXIT_CODE -eq 0 ]] && [[ "$REVIEW_CLEANUP_ON_SUCCESS" == "true" ]]; then
+  if [[ $EXIT_CODE -eq 0 ]] && [[ "$REVIEW_CHANGES_APPROVED" == "true" ]] && [[ "$REVIEW_CLEANUP_ON_SUCCESS" == "true" ]]; then
     echo "Running post-review cleanup."
     if ! run_post_review_cleanup; then
       echo "Post-review cleanup failed." >&2
       EXIT_CODE=1
     fi
+  elif [[ $EXIT_CODE -eq 0 ]] && [[ "$REVIEW_CHANGES_APPROVED" != "true" ]]; then
+    echo "Skipping post-review cleanup in proposal-only review mode."
   fi
 
   exit $EXIT_CODE
 
-elif [[ "$PROCEED_MODE" == "true" ]] || is_proceed_request "$USER_PROMPT"; then
+elif [[ "$PHASE" == "implement" ]]; then
   # --- IMPLEMENTATION MODE ---
   echo "Implementation mode detected."
   IMPLEMENTATION_INTERACTIVE_FALLBACK_USED=false

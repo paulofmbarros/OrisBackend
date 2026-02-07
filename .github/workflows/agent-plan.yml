@@ -50,6 +50,7 @@ jobs:
           INPUT_RUNTIME: ${{ github.event.inputs.runtime }}
           COMMENT_BODY_VAL: ${{ github.event.comment.body }}
           ISSUE_NUMBER_VAL: ${{ github.event.issue.number }}
+          ISSUE_TITLE_VAL: ${{ github.event.issue.title }}
         run: |
           JIRA_KEY=""
           # 1. Handle Manual Trigger (Workflow Dispatch)
@@ -77,7 +78,7 @@ jobs:
             # Case B: Revision (/revise ...)
             elif echo "$COMMENT_BODY" | grep -qE "^\s*/revise\s+"; then
               REVISION_FEEDBACK=$(echo "$COMMENT_BODY" | sed -E 's|^\s*/revise\s+||')
-              ISSUE_TITLE="${{ github.event.issue.title }}"
+              ISSUE_TITLE="$ISSUE_TITLE_VAL"
               JIRA_KEY=$(echo "$ISSUE_TITLE" | grep -oE '[A-Z]+-[0-9]+' | head -1 || echo "")
               echo "REVISION_FEEDBACK=$REVISION_FEEDBACK" >> $GITHUB_OUTPUT
               echo "IS_REVISION=true" >> $GITHUB_OUTPUT
