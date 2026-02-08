@@ -90,18 +90,15 @@ git push
    - **PR/Issue Comments** - Plan posted as a comment
    - **Check Runs** - Summary in the checks section
 
-### Option B: Create a Test PR
+### Option B: Comment Trigger (Explicit)
 
-1. Create a new branch:
-   ```bash
-   git checkout -b test-agent-workflow
-   git push -u origin test-agent-workflow
+1. Open an issue or PR on GitHub
+2. Add a comment:
    ```
-
-2. Create a PR on GitHub with title: `[OR-25] Test agent workflow`
-3. The workflow will automatically trigger
-4. Check the **Actions** tab to see it running
-5. Once complete, check the PR comments for the plan
+   /agent Work on Jira ticket OR-25
+   ```
+3. Check the **Actions** tab to see it running
+4. Once complete, check the PR/issue comments for the plan
 
 ---
 
@@ -125,18 +122,18 @@ After the plan is generated, you'll see the output in **three places**:
 
 ### To Approve and Proceed:
 
-**Method 1: Using the Approval Button (Recommended)**
+**Method 1: Comment `/proceed` (Recommended)**
+1. On the PR/Issue, comment: `/proceed`
+2. The implementation workflow will trigger
+
+**Method 2: Approve Deployment (If Required)**
 1. Go to the **Actions** tab
-2. Find the workflow run that just completed
+2. Open the **AI Agent - Proceed with Implementation** workflow run
 3. Click on the run to see details
 4. Look for the **"Review deployments"** section
 5. Click **Review deployments**
 6. Click **Approve and deploy** (or **Reject** if you don't want to proceed)
-7. The implementation phase will start automatically
-
-**Method 2: Using Comment Command**
-1. On the PR/Issue, comment: `/proceed`
-2. The implementation workflow will trigger
+7. The implementation phase will continue automatically
 
 ---
 
@@ -153,8 +150,9 @@ If you want to modify the plan before implementation:
 2. The `agent-revise.yml` workflow will trigger
 3. Wait for the revised plan to be posted as a comment
 4. Review the revised plan
-5. If satisfied, comment `/proceed` or approve via "Review deployments"
-6. If still not satisfied, comment `/revise <more feedback>` again
+5. If satisfied, comment `/proceed`
+6. If prompted, approve via "Review deployments"
+7. If still not satisfied, comment `/revise <more feedback>` again
 
 ---
 
@@ -162,11 +160,12 @@ If you want to modify the plan before implementation:
 
 After approval:
 
-1. The implementation phase runs automatically
-2. The agent makes code changes and commits them
-3. Check the PR to see the changes
-4. Review the code changes
-5. Merge the PR when ready
+1. Comment `/proceed` to trigger implementation
+2. If prompted, approve "Review deployments"
+3. The agent makes code changes and commits them
+4. Check the PR to see the changes
+5. Review the code changes
+6. Merge the PR when ready
 
 ---
 
@@ -175,12 +174,13 @@ After approval:
 ### Daily Workflow: Working on a Jira Ticket
 
 1. **Create PR** with title: `[OR-25] Implement user authentication`
-2. **Wait** for plan to be generated (automatic)
+2. **Trigger plan explicitly** (Actions tab run or `/agent ...` comment) and wait for completion
 3. **Review** the plan in PR comments
 4. **If changes needed**: Comment `/revise <feedback>`
-5. **If approved**: Click "Review deployments" → "Approve and deploy"
-6. **Review** the code changes
-7. **Merge** the PR
+5. **If approved**: Comment `/proceed`
+6. **If prompted**: Click "Review deployments" → "Approve and deploy"
+7. **Review** the code changes
+8. **Merge** the PR
 
 ### Using Issue Comments
 

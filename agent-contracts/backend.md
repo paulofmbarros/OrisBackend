@@ -56,6 +56,18 @@ For **every** ticket:
     - How to verify
     - PR link if applicable
 
+9) **QA (Postman + Jira proof)**
+    - Run Postman MCP QA against the default pinned target:
+      - Workspace: `Oris Team's Workspace` (`4c3c7969-3829-4624-88a3-10b8ee12db5a`)
+      - Collection: `Oris Backend` (`f16c975e-560a-484b-a926-997a9eb821d7`)
+    - If implementation introduces new endpoint(s), add the endpoint(s) and tests in that same collection.
+    - Post QA proof as a Jira comment on the ticket.
+    - Allow overrides through env vars when needed:
+      - `AGENT_POSTMAN_QA_WORKSPACE_NAME`
+      - `AGENT_POSTMAN_QA_COLLECTION_NAME`
+      - `AGENT_POSTMAN_QA_WORKSPACE_ID`
+      - `AGENT_POSTMAN_QA_COLLECTION_ID`
+
 ---
 
 ## Architecture Boundaries (MVP)

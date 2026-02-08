@@ -14,7 +14,7 @@ EOF
   exit 2
 }
 
-if [ "$#" -lt 2 ]; then
+if [[ "$#" -lt 2 ]]; then
   echo "Error: missing arguments." >&2
   usage
 fi
@@ -23,7 +23,7 @@ CONTRACT_FILE="$1"
 shift
 USER_PROMPT="$*"
 
-if [ ! -f "$CONTRACT_FILE" ]; then
+if [[ ! -f "$CONTRACT_FILE" ]]; then
   echo "Error: CONTRACT_FILE does not exist: $CONTRACT_FILE" >&2
   exit 3
 fi
@@ -63,7 +63,7 @@ STATUS=$?
 echo "[opencode] Attempt 1 exit=$STATUS" >&2
 
 # If attempt produced no output and non-zero exit, try stdin
-if [ $STATUS -ne 0 ]; then
+if [[ $STATUS -ne 0 ]]; then
   echo "[opencode] Attempt 1 failed, trying via stdin..." >&2
   echo "[opencode] Attempt 2: opencode run < $TMPFILE" >&2
   opencode run < "$TMPFILE"
@@ -72,7 +72,7 @@ if [ $STATUS -ne 0 ]; then
 fi
 
 # If still non-zero, try passing filename
-if [ $STATUS -ne 0 ]; then
+if [[ $STATUS -ne 0 ]]; then
   echo "[opencode] Attempt 2 failed, trying with filename argument..." >&2
   echo "[opencode] Attempt 3: opencode run $TMPFILE" >&2
   opencode run "$TMPFILE"
@@ -88,7 +88,7 @@ set -e
 echo "opencode exited with status $FINAL_STATUS"
 
 # Pause for user unless OPENCODE_WAIT is set to 0
-if [ "${OPENCODE_WAIT:-1}" != "0" ]; then
+if [[ "${OPENCODE_WAIT:-1}" != "0" ]]; then
   echo "Press Enter to continue..."
   read -r _
 fi

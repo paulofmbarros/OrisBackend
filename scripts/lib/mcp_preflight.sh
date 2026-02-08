@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/lib/mcp_preflight.sh --phase plan|implement|review --servers "a,b,c" [--output /path/preflight.json]
+  ./scripts/lib/mcp_preflight.sh --phase plan|implement|review|qa --servers "a,b,c" [--output /path/preflight.json]
 EOF
 }
 
@@ -15,6 +15,7 @@ normalize_bool() {
     1|true|yes|on|always) echo "true" ;;
     *) echo "false" ;;
   esac
+  return 0
 }
 
 json_escape() {
@@ -25,6 +26,7 @@ json_escape() {
   text="${text//$'\r'/}"
   text="${text//$'\t'/\\t}"
   printf "%s" "$text"
+  return 0
 }
 
 csv_to_json_array() {
@@ -32,10 +34,11 @@ csv_to_json_array() {
   local IFS=','
   local first=true
   local raw=""
+  local -a __csv_parts=()
 
   read -r -a __csv_parts <<< "$csv"
   printf "["
-  for raw in "${__csv_parts[@]}"; do
+  for raw in "${__csv_parts[@]-}"; do
     local item
     item="$(echo "$raw" | tr -d '[:space:]')"
     if [[ -z "$item" ]]; then
@@ -49,10 +52,12 @@ csv_to_json_array() {
     printf "\"%s\"" "$(json_escape "$item")"
   done
   printf "]"
+  return 0
 }
 
 strip_ansi() {
   sed -E $'s/\x1B\\[[0-9;?]*[ -/]*[@-~]//g' | tr -d '\r'
+  return 0
 }
 
 csv_to_array() {
@@ -61,13 +66,14 @@ csv_to_array() {
   read -r -a __raw_parts <<< "$csv"
   __csv_norm_parts=()
   local raw=""
-  for raw in "${__raw_parts[@]}"; do
+  for raw in "${__raw_parts[@]-}"; do
     local item
     item="$(echo "$raw" | tr -d '[:space:]')"
     if [[ -n "$item" ]]; then
       __csv_norm_parts+=("$item")
     fi
   done
+  return 0
 }
 
 array_to_json() {
@@ -83,6 +89,7 @@ array_to_json() {
     printf "\"%s\"" "$(json_escape "$value")"
   done
   printf "]"
+  return 0
 }
 
 PHASE=""

@@ -50,6 +50,7 @@ remove_path() {
     rm -rf "$path"
     removed_count=$((removed_count + 1))
   fi
+  return 0
 }
 
 remove_path "$STATE_DIR/active_plan.md"
@@ -57,9 +58,12 @@ remove_path "$STATE_DIR/active_ticket.txt"
 remove_path "$STATE_DIR/planning_debug.log"
 remove_path "$STATE_DIR/implementation_debug.log"
 remove_path "$STATE_DIR/review_debug.log"
+remove_path "$STATE_DIR/qa_debug.log"
 remove_path "$STATE_DIR/review_checks.log"
 remove_path "$STATE_DIR/sonar_mcp_review.log"
 remove_path "$STATE_DIR/jira_review_update.log"
+remove_path "$STATE_DIR/postman_mcp_qa.log"
+remove_path "$STATE_DIR/jira_qa_update.log"
 remove_path "$CACHE_DIR/review_aux"
 
 if [[ "$WIPE_SONARQUBE" == "true" ]]; then

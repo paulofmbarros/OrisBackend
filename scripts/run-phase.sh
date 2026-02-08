@@ -4,12 +4,13 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/run-phase.sh [--runtime gemini] [--role backend] [--phase plan|implement|review] "PROMPT"
+  ./scripts/run-phase.sh [--runtime gemini] [--role backend] [--phase plan|implement|review|qa] "PROMPT"
 
 Examples:
   ./scripts/run-phase.sh --runtime gemini --phase plan "Plan OR-123 implementation"
   ./scripts/run-phase.sh --runtime gemini --phase implement "Proceed with implementation"
   HEADLESS=true ./scripts/run-phase.sh --runtime gemini --phase review "Review the code"
+  HEADLESS=true ./scripts/run-phase.sh --runtime gemini --phase qa "Run QA for OR-123"
   HEADLESS=true ./scripts/run-phase.sh --runtime gemini --phase review "Approved. Apply the proposed review changes."
 EOF
 }
@@ -40,7 +41,8 @@ normalize_phase() {
   case "$raw" in
     plan|planning) echo "plan" ;;
     implement|implementation|proceed) echo "implement" ;;
-    review|qa) echo "review" ;;
+    review) echo "review" ;;
+    qa|qualityassurance|quality-assurance) echo "qa" ;;
     *) echo "" ;;
   esac
 }
@@ -128,6 +130,11 @@ resolve_ticket_id() {
 resolve_phase_from_prompt() {
   local prompt="$1"
 
+  if [[ "${AGENT_QA:-false}" == "true" ]] || echo "$prompt" | grep -Eqi "^[[:space:]]*(qa|quality assurance|quality-assurance)([[:space:]]|$)|run[[:space:]]+(the[[:space:]]+)?qa([[:space:]]|$)|postman[[:space:]]+(qa|tests?)"; then
+    echo "qa"
+    return 0
+  fi
+
   if [[ "${AGENT_REVIEW:-false}" == "true" ]] || echo "$prompt" | grep -Eqi "^[[:space:]]*review( the)? code([[:space:]]|$)"; then
     echo "review"
     return 0
@@ -151,12 +158,19 @@ prompt_requests_jira_update() {
   echo "$prompt" | grep -Eqi "jira|atlassian|ticket update|post( a)? comment|review update"
 }
 
+prompt_requests_postman_qa() {
+  local prompt="$1"
+  echo "$prompt" | grep -Eqi "postman|collection test|api tests?|endpoint tests?|qa"
+}
+
 resolve_phase_mcp_servers() {
   local phase="$1"
   local prompt="$2"
   local servers=""
   local sonar_mode=""
   local jira_mode=""
+  local postman_mode=""
+  local qa_jira_mode=""
 
   case "$phase" in
     plan)
@@ -175,6 +189,19 @@ resolve_phase_mcp_servers() {
         jira_mode="$(normalize_mode "${AGENT_GEMINI_JIRA_REVIEW_MODE:-always}")"
         if [[ "$jira_mode" == "always" ]] || { [[ "$jira_mode" == "auto" ]] && prompt_requests_jira_update "$prompt"; }; then
           servers="$servers,atlassian-rovo-mcp-server"
+        fi
+      fi
+      ;;
+    qa)
+      servers=""
+      postman_mode="$(normalize_mode "${AGENT_GEMINI_POSTMAN_QA_MODE:-always}")"
+      if [[ "$postman_mode" == "always" ]] || { [[ "$postman_mode" == "auto" ]] && prompt_requests_postman_qa "$prompt"; }; then
+        servers="${servers:+$servers,}postman"
+      fi
+      if [[ "${AGENT_GEMINI_POST_QA_JIRA_COMMENT:-true}" == "true" ]]; then
+        qa_jira_mode="$(normalize_mode "${AGENT_GEMINI_QA_JIRA_MODE:-always}")"
+        if [[ "$qa_jira_mode" == "always" ]] || { [[ "$qa_jira_mode" == "auto" ]] && prompt_requests_jira_update "$prompt"; }; then
+          servers="${servers:+$servers,}atlassian-rovo-mcp-server"
         fi
       fi
       ;;
@@ -201,10 +228,11 @@ csv_to_json_array() {
   local IFS=','
   local first=true
   local raw=""
+  local -a __csv_parts=()
 
   read -r -a __csv_parts <<< "$csv"
   printf "["
-  for raw in "${__csv_parts[@]}"; do
+  for raw in "${__csv_parts[@]-}"; do
     local item
     item="$(echo "$raw" | tr -d '[:space:]')"
     if [[ -z "$item" ]]; then
@@ -240,13 +268,35 @@ extract_sonar_quality_gate() {
   echo "unknown"
 }
 
+extract_postman_qa_status() {
+  local qa_log="$1"
+  if [[ ! -s "$qa_log" ]]; then
+    echo "unknown"
+    return 0
+  fi
+
+  if grep -Eqi "postman qa status[^[:alpha:]]*(failed|red|error|ko)|postman qa failed|collection run failed|failed tests" "$qa_log"; then
+    echo "red"
+    return 0
+  fi
+
+  if grep -Eqi "postman qa status[^[:alpha:]]*(passed|green|ok|success)|postman qa completed successfully|all postman tests passed" "$qa_log"; then
+    echo "green"
+    return 0
+  fi
+
+  echo "unknown"
+}
+
 build_mcp_tools_hint() {
   local phase="$1"
   local sonar_log="$2"
   local jira_log="$3"
-  local planning_log="$4"
-  local implementation_log="$5"
-  local review_log="$6"
+  local postman_log="$4"
+  local qa_jira_log="$5"
+  local planning_log="$6"
+  local implementation_log="$7"
+  local review_log="$8"
   local tools=""
 
   case "$phase" in
@@ -270,6 +320,16 @@ build_mcp_tools_hint() {
       if [[ -s "$jira_log" ]]; then
         tools="${tools:+$tools,}atlassian:addCommentToJiraIssue"
       fi
+      ;;
+    qa)
+      if [[ -s "$postman_log" ]]; then
+        tools="postman:collection-run"
+      fi
+      if [[ -s "$qa_jira_log" ]]; then
+        tools="${tools:+$tools,}atlassian:addCommentToJiraIssue"
+      fi
+      ;;
+    *)
       ;;
   esac
 
@@ -365,17 +425,26 @@ case "$PHASE" in
   plan)
     export AGENT_PROCEED=false
     export AGENT_REVIEW=false
+    export AGENT_QA=false
     ;;
   implement)
     export AGENT_PROCEED=true
     export AGENT_REVIEW=false
+    export AGENT_QA=false
     ;;
   review)
     export AGENT_PROCEED=false
     export AGENT_REVIEW=true
+    export AGENT_QA=false
     ;;
-esac
-
+      qa)
+        export AGENT_PROCEED=false
+        export AGENT_REVIEW=false
+        export AGENT_QA=true
+        ;;
+      *)
+        ;;
+    esac
 export AGENT_PHASE="$PHASE"
 if [[ -n "${AGENT_MCP_SERVERS_OVERRIDE:-}" ]]; then
   export AGENT_MCP_SERVERS="$AGENT_MCP_SERVERS_OVERRIDE"
@@ -404,9 +473,12 @@ export AGENT_GEMINI_REVIEW_CLEANUP_REMOVE_CONTAINERS="${AGENT_GEMINI_REVIEW_CLEA
 export AGENT_GEMINI_PLANNING_LOG_FILE="${AGENT_GEMINI_PLANNING_LOG_FILE:-$ARTIFACT_DIR/planning_debug.log}"
 export AGENT_GEMINI_IMPLEMENTATION_LOG_FILE="${AGENT_GEMINI_IMPLEMENTATION_LOG_FILE:-$ARTIFACT_DIR/implementation_debug.log}"
 export AGENT_GEMINI_REVIEW_LOG_FILE="${AGENT_GEMINI_REVIEW_LOG_FILE:-$ARTIFACT_DIR/review_debug.log}"
+export AGENT_GEMINI_QA_LOG_FILE="${AGENT_GEMINI_QA_LOG_FILE:-$ARTIFACT_DIR/qa_debug.log}"
 export AGENT_REVIEW_LOG_FILE="${AGENT_REVIEW_LOG_FILE:-$ARTIFACT_DIR/review_checks.log}"
 export AGENT_SONAR_MCP_LOG_FILE="${AGENT_SONAR_MCP_LOG_FILE:-$ARTIFACT_DIR/sonar_mcp_review.log}"
 export AGENT_JIRA_REVIEW_LOG_FILE="${AGENT_JIRA_REVIEW_LOG_FILE:-$ARTIFACT_DIR/jira_review_update.log}"
+export AGENT_POSTMAN_QA_LOG_FILE="${AGENT_POSTMAN_QA_LOG_FILE:-$ARTIFACT_DIR/postman_mcp_qa.log}"
+export AGENT_JIRA_QA_LOG_FILE="${AGENT_JIRA_QA_LOG_FILE:-$ARTIFACT_DIR/jira_qa_update.log}"
 
 START_EPOCH="$(date +%s)"
 STARTED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
@@ -419,9 +491,9 @@ PREFLIGHT_JSON_FILE="$ARTIFACT_DIR/preflight.json"
 CONNECTED_SERVERS_JSON="[]"
 REQUESTED_SERVERS_JSON="$(csv_to_json_array "$AGENT_MCP_SERVERS")"
 
-if [[ "$PHASE" == "review" ]] && [[ "$(normalize_bool "${AGENT_ENFORCE_REVIEW_FEATURE_BRANCH:-true}")" == "true" ]]; then
+if [[ "$PHASE" =~ ^(review|qa)$ ]] && [[ "$(normalize_bool "${AGENT_ENFORCE_REVIEW_FEATURE_BRANCH:-true}")" == "true" ]]; then
   if [[ ! "$BRANCH" =~ ^feature/ ]]; then
-    echo "Review phase guard: expected a feature/* branch, found '$BRANCH'." >&2
+    echo "Review/QA phase guard: expected a feature/* branch, found '$BRANCH'." >&2
     echo "Set AGENT_ENFORCE_REVIEW_FEATURE_BRANCH=false to bypass intentionally." >&2
     EXIT_CODE=3
     RESULT="failed-branch-guard"
@@ -453,12 +525,16 @@ if [[ "$PHASE" == "review" ]] && [[ "$(normalize_bool "${AGENT_ENFORCE_REVIEW_FE
     "planning_debug_log": "$(json_escape "$AGENT_GEMINI_PLANNING_LOG_FILE")",
     "implementation_debug_log": "$(json_escape "$AGENT_GEMINI_IMPLEMENTATION_LOG_FILE")",
     "review_debug_log": "$(json_escape "$AGENT_GEMINI_REVIEW_LOG_FILE")",
+    "qa_debug_log": "$(json_escape "$AGENT_GEMINI_QA_LOG_FILE")",
     "review_checks_log": "$(json_escape "$AGENT_REVIEW_LOG_FILE")",
     "sonar_mcp_review_log": "$(json_escape "$AGENT_SONAR_MCP_LOG_FILE")",
-    "jira_review_update_log": "$(json_escape "$AGENT_JIRA_REVIEW_LOG_FILE")"
+    "jira_review_update_log": "$(json_escape "$AGENT_JIRA_REVIEW_LOG_FILE")",
+    "postman_mcp_qa_log": "$(json_escape "$AGENT_POSTMAN_QA_LOG_FILE")",
+    "jira_qa_update_log": "$(json_escape "$AGENT_JIRA_QA_LOG_FILE")"
   },
   "summary": {
     "sonar_quality_gate": "unknown",
+    "postman_qa_status": "unknown",
     "mcp_tools_hint": ""
   }
 }
@@ -532,7 +608,8 @@ else
 fi
 
 SONAR_QUALITY_GATE="$(extract_sonar_quality_gate "$AGENT_SONAR_MCP_LOG_FILE")"
-MCP_TOOLS_HINT="$(build_mcp_tools_hint "$PHASE" "$AGENT_SONAR_MCP_LOG_FILE" "$AGENT_JIRA_REVIEW_LOG_FILE" "$AGENT_GEMINI_PLANNING_LOG_FILE" "$AGENT_GEMINI_IMPLEMENTATION_LOG_FILE" "$AGENT_REVIEW_LOG_FILE")"
+POSTMAN_QA_STATUS="$(extract_postman_qa_status "$AGENT_POSTMAN_QA_LOG_FILE")"
+MCP_TOOLS_HINT="$(build_mcp_tools_hint "$PHASE" "$AGENT_SONAR_MCP_LOG_FILE" "$AGENT_JIRA_REVIEW_LOG_FILE" "$AGENT_POSTMAN_QA_LOG_FILE" "$AGENT_JIRA_QA_LOG_FILE" "$AGENT_GEMINI_PLANNING_LOG_FILE" "$AGENT_GEMINI_IMPLEMENTATION_LOG_FILE" "$AGENT_REVIEW_LOG_FILE")"
 
 FINISHED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 END_EPOCH="$(date +%s)"
@@ -563,12 +640,16 @@ cat > "$AGENT_PHASE_METADATA_FILE" <<EOF
     "planning_debug_log": "$(json_escape "$AGENT_GEMINI_PLANNING_LOG_FILE")",
     "implementation_debug_log": "$(json_escape "$AGENT_GEMINI_IMPLEMENTATION_LOG_FILE")",
     "review_debug_log": "$(json_escape "$AGENT_GEMINI_REVIEW_LOG_FILE")",
+    "qa_debug_log": "$(json_escape "$AGENT_GEMINI_QA_LOG_FILE")",
     "review_checks_log": "$(json_escape "$AGENT_REVIEW_LOG_FILE")",
     "sonar_mcp_review_log": "$(json_escape "$AGENT_SONAR_MCP_LOG_FILE")",
-    "jira_review_update_log": "$(json_escape "$AGENT_JIRA_REVIEW_LOG_FILE")"
+    "jira_review_update_log": "$(json_escape "$AGENT_JIRA_REVIEW_LOG_FILE")",
+    "postman_mcp_qa_log": "$(json_escape "$AGENT_POSTMAN_QA_LOG_FILE")",
+    "jira_qa_update_log": "$(json_escape "$AGENT_JIRA_QA_LOG_FILE")"
   },
   "summary": {
     "sonar_quality_gate": "$(json_escape "$SONAR_QUALITY_GATE")",
+    "postman_qa_status": "$(json_escape "$POSTMAN_QA_STATUS")",
     "mcp_tools_hint": "$(json_escape "${MCP_TOOLS_HINT:-}")"
   }
 }
