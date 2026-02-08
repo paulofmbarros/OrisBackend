@@ -12,7 +12,8 @@ public class TestControllerTests
     public void GetProtected_ReturnsOkWithAuthorizedMessageAndUserId()
     {
         // Arrange
-        var controller = new TestController(new StubCurrentUserService("user-123"));
+        var userId = Guid.NewGuid();
+        var controller = new TestController(new StubCurrentUserService(userId));
 
         // Act
         var result = controller.GetProtected();
@@ -24,7 +25,7 @@ public class TestControllerTests
         payload.GetType().GetProperty("Message")?.GetValue(payload)?.ToString()
             .ShouldBe("You are authorized");
         payload.GetType().GetProperty("UserId")?.GetValue(payload)?.ToString()
-            .ShouldBe("user-123");
+            .ShouldBe(userId.ToString());
     }
 
     [Fact]
@@ -46,11 +47,11 @@ public class TestControllerTests
 
     private sealed class StubCurrentUserService : ICurrentUserService
     {
-        public StubCurrentUserService(string? userId)
+        public StubCurrentUserService(Guid? userId)
         {
             UserId = userId;
         }
 
-        public string? UserId { get; }
+        public Guid? UserId { get; }
     }
 }

@@ -21,10 +21,10 @@ public class CurrentUserServiceTests
     public void UserId_WhenUserIsAuthenticated_ReturnsUserId()
     {
         // Arrange
-        var userId = Guid.NewGuid().ToString();
+        var userId = Guid.NewGuid();
         var claims = new List<Claim>
         {
-            new Claim(ClaimTypes.NameIdentifier, userId)
+            new Claim(ClaimTypes.NameIdentifier, userId.ToString())
         };
         var identity = new ClaimsIdentity(claims, "TestAuth");
         var claimsPrincipal = new ClaimsPrincipal(identity);

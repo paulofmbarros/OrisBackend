@@ -12,6 +12,8 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 REVIEW_LOG_FILE="${AGENT_REVIEW_LOG_FILE:-$STATE_DIR/review_checks.log}"
 SONAR_MCP_LOG_FILE="${AGENT_SONAR_MCP_LOG_FILE:-$STATE_DIR/sonar_mcp_review.log}"
 JIRA_REVIEW_LOG_FILE="${AGENT_JIRA_REVIEW_LOG_FILE:-$STATE_DIR/jira_review_update.log}"
+POSTMAN_QA_LOG_FILE="${AGENT_POSTMAN_QA_LOG_FILE:-$STATE_DIR/postman_mcp_qa.log}"
+JIRA_QA_LOG_FILE="${AGENT_JIRA_QA_LOG_FILE:-$STATE_DIR/jira_qa_update.log}"
 MCP_SERVERS="${AGENT_MCP_SERVERS:-notion,atlassian-rovo-mcp-server,sonarqube}"
 READ_ONLY_APPROVAL_MODE="${AGENT_GEMINI_READ_ONLY_APPROVAL_MODE:-default}"
 MUTATING_APPROVAL_MODE="${AGENT_GEMINI_MUTATING_APPROVAL_MODE:-yolo}"
@@ -20,11 +22,15 @@ GLOBAL_VERBOSE="${AGENT_GEMINI_VERBOSE:-true}"
 PLANNING_VERBOSE="${AGENT_GEMINI_PLANNING_VERBOSE:-$GLOBAL_VERBOSE}"
 IMPLEMENTATION_VERBOSE="${AGENT_GEMINI_IMPLEMENTATION_VERBOSE:-$GLOBAL_VERBOSE}"
 REVIEW_VERBOSE="${AGENT_GEMINI_REVIEW_VERBOSE:-$GLOBAL_VERBOSE}"
+QA_VERBOSE="${AGENT_GEMINI_QA_VERBOSE:-$GLOBAL_VERBOSE}"
 PLANNING_LOG_FILE="${AGENT_GEMINI_PLANNING_LOG_FILE:-$STATE_DIR/planning_debug.log}"
 IMPLEMENTATION_LOG_FILE="${AGENT_GEMINI_IMPLEMENTATION_LOG_FILE:-$STATE_DIR/implementation_debug.log}"
 REVIEW_DEBUG_LOG_FILE="${AGENT_GEMINI_REVIEW_LOG_FILE:-$STATE_DIR/review_debug.log}"
+QA_DEBUG_LOG_FILE="${AGENT_GEMINI_QA_LOG_FILE:-$STATE_DIR/qa_debug.log}"
 POST_REVIEW_JIRA_COMMENT="${AGENT_GEMINI_POST_REVIEW_JIRA_COMMENT:-true}"
 REQUIRE_REVIEW_JIRA_COMMENT="${AGENT_GEMINI_REQUIRE_REVIEW_JIRA_COMMENT:-true}"
+POST_QA_JIRA_COMMENT="${AGENT_GEMINI_POST_QA_JIRA_COMMENT:-true}"
+REQUIRE_QA_JIRA_COMMENT="${AGENT_GEMINI_REQUIRE_QA_JIRA_COMMENT:-true}"
 REVIEW_CLEANUP_ON_SUCCESS="${AGENT_GEMINI_REVIEW_CLEANUP_ON_SUCCESS:-true}"
 REVIEW_CLEANUP_REMOVE_LOGS="${AGENT_GEMINI_REVIEW_CLEANUP_REMOVE_LOGS:-true}"
 REVIEW_CLEANUP_REMOVE_CACHE="${AGENT_GEMINI_REVIEW_CLEANUP_REMOVE_CACHE:-false}"
@@ -33,6 +39,19 @@ REVIEW_REQUIRE_APPROVAL="${AGENT_GEMINI_REVIEW_REQUIRE_APPROVAL:-true}"
 REVIEW_APPLY_CHANGES_OVERRIDE="${AGENT_GEMINI_REVIEW_APPLY_CHANGES:-}"
 SONAR_REVIEW_MODE="${AGENT_GEMINI_SONAR_REVIEW_MODE:-always}"
 JIRA_REVIEW_MODE="${AGENT_GEMINI_JIRA_REVIEW_MODE:-always}"
+POSTMAN_QA_MODE="${AGENT_GEMINI_POSTMAN_QA_MODE:-always}"
+QA_JIRA_MODE="${AGENT_GEMINI_QA_JIRA_MODE:-always}"
+POSTMAN_QA_MCP_SERVERS="${AGENT_GEMINI_POSTMAN_QA_MCP_SERVERS:-postman}"
+JIRA_QA_MCP_SERVERS="${AGENT_GEMINI_JIRA_QA_MCP_SERVERS:-atlassian-rovo-mcp-server}"
+POSTMAN_QA_WORKSPACE_NAME="${AGENT_POSTMAN_QA_WORKSPACE_NAME:-}"
+if [[ -z "$POSTMAN_QA_WORKSPACE_NAME" ]]; then
+  POSTMAN_QA_WORKSPACE_NAME="Oris Team's Workspace"
+fi
+POSTMAN_QA_COLLECTION_NAME="${AGENT_POSTMAN_QA_COLLECTION_NAME:-Oris Backend}"
+POSTMAN_QA_WORKSPACE_ID="${AGENT_POSTMAN_QA_WORKSPACE_ID:-4c3c7969-3829-4624-88a3-10b8ee12db5a}"
+POSTMAN_QA_COLLECTION_ID="${AGENT_POSTMAN_QA_COLLECTION_ID:-f16c975e-560a-484b-a926-997a9eb821d7}"
+POSTMAN_QA_MAX_RUNS="${AGENT_GEMINI_POSTMAN_QA_MAX_RUNS:-2}"
+QA_ATTEMPT_TIMEOUT_SECONDS="${AGENT_GEMINI_QA_ATTEMPT_TIMEOUT_SECONDS:-600}"
 AUX_RESUME_POLICY="${AGENT_GEMINI_AUX_RESUME_POLICY:-auto}"
 AUX_RESUME_MAX_AGE_SECONDS="${AGENT_GEMINI_AUX_RESUME_MAX_AGE_SECONDS:-14400}"
 IMPLEMENTATION_USE_RESUME="${AGENT_GEMINI_IMPLEMENTATION_USE_RESUME:-false}"
@@ -59,7 +78,7 @@ PLANNING_CONTRACT="$MINIFIED_CONTRACT"
 EXECUTION_CONTRACT="$(cat <<'EOF'
 # Oris Backend Execution Contract (Compact)
 Role:
-- Implement and review backend ticket scope exactly as approved in the plan.
+- Implement, review, and run QA for backend ticket scope exactly as approved in the plan.
 
 Constraints:
 - Keep strict ticket scope. No unrelated refactors.
@@ -103,6 +122,59 @@ build_execution_prompt() {
   echo ""
   echo "USER INSTRUCTION:"
   echo "$INSTRUCTION"
+}
+
+summarize_active_plan_for_qa() {
+  local plan_file="$STATE_DIR/active_plan.md"
+  local hints=""
+
+  if [[ ! -s "$plan_file" ]]; then
+    echo "(no active plan hints available)"
+    return 0
+  fi
+
+  hints="$(
+    agent_core::strip_ansi_file "$plan_file" \
+      | grep -Eai "endpoint|route|controller|api|http|auth|authorization|acceptance" \
+      | head -n 20 || true
+  )"
+
+  if [[ -z "$hints" ]]; then
+    hints="$(agent_core::strip_ansi_file "$plan_file" | head -n 40 || true)"
+  fi
+
+  truncate_text_for_prompt "$hints" 1500
+}
+
+build_qa_prompt() {
+  local instruction="$1"
+  local ticket="$2"
+  local branch="$3"
+  local commit="$4"
+  local git_status_summary="$5"
+  local plan_hints
+
+  plan_hints="$(summarize_active_plan_for_qa)"
+
+  cat <<EOF
+# Oris Backend QA Prompt (Slim)
+You are running QA for a backend ticket.
+Use only the allowed MCP servers.
+Do not request broad repository context unless required for this QA task.
+
+Ticket: ${ticket:-none}
+Branch: $branch
+Commit: $commit
+
+Git status summary:
+$git_status_summary
+
+Active plan hints:
+$plan_hints
+
+Task:
+$instruction
+EOF
 }
 
 build_prompt_from_active_plan() {
@@ -149,7 +221,7 @@ $EXECUTION_CONTRACT
 ---
 
 ## CONTEXT: EXISTING PLAN
-The following plan has been approved. You must implement/review it exactly.
+The following plan has been approved. You must execute it exactly.
 
 $PLAN_CONTENT
 
@@ -175,6 +247,8 @@ extract_ticket_id() {
 
 resolve_effective_ticket_id() {
   local ticket=""
+  local branch=""
+  local branch_ticket=""
 
   if [[ -n "$ACTIVE_TICKET" ]]; then
     echo "$ACTIVE_TICKET"
@@ -201,6 +275,17 @@ resolve_effective_ticket_id() {
       echo "$ticket"
       return 0
     fi
+  fi
+
+  branch="$(git branch --show-current 2>/dev/null || true)"
+  branch_ticket="$(
+    echo "$branch" \
+      | sed -nE 's#^feature/([a-z]+-[0-9]+)$#\1#p' \
+      | tr '[:lower:]' '[:upper:]'
+  )"
+  if [[ "$branch_ticket" =~ ^[A-Z]+-[0-9]+$ ]]; then
+    echo "$branch_ticket"
+    return 0
   fi
 
   echo ""
@@ -361,6 +446,33 @@ normalize_bool_value() {
   esac
 }
 
+normalize_positive_int() {
+  local raw="$1"
+  local fallback="${2:-1}"
+  if [[ "$raw" =~ ^[0-9]+$ ]] && [[ "$raw" -gt 0 ]]; then
+    echo "$raw"
+    return 0
+  fi
+  echo "$fallback"
+}
+
+build_postman_target_constraints() {
+  local workspace_name="$1"
+  local collection_name="$2"
+  local workspace_id="$3"
+  local collection_id="$4"
+
+  cat <<EOF
+Postman target constraints (enforced):
+- Workspace name must be exactly: $workspace_name
+- Collection name must be exactly: $collection_name
+- If workspace_id and collection_id are provided below, use only those IDs:
+  - workspace_id: ${workspace_id:-not-set}
+  - collection_id: ${collection_id:-not-set}
+- Do not run QA against any other workspace or collection.
+EOF
+}
+
 is_review_change_approval_prompt() {
   local prompt="$1"
 
@@ -421,6 +533,38 @@ should_run_jira_review_update() {
   esac
 
   echo "$prompt" | grep -Eqi "jira|atlassian|ticket update|post( a)? comment|review update"
+}
+
+should_run_postman_qa() {
+  local prompt="$1"
+  local mode
+  mode="$(normalize_mode_value "$POSTMAN_QA_MODE")"
+
+  case "$mode" in
+    always) return 0 ;;
+    never) return 1 ;;
+    *) ;;
+  esac
+
+  echo "$prompt" | grep -Eqi "postman|collection test|api tests?|endpoint tests?|qa"
+}
+
+should_run_jira_qa_update() {
+  local prompt="$1"
+  local mode
+
+  if [[ "$POST_QA_JIRA_COMMENT" != "true" ]]; then
+    return 1
+  fi
+
+  mode="$(normalize_mode_value "$QA_JIRA_MODE")"
+  case "$mode" in
+    always) return 0 ;;
+    never) return 1 ;;
+    *) ;;
+  esac
+
+  echo "$prompt" | grep -Eqi "jira|atlassian|ticket update|post( a)? comment|qa update|proof"
 }
 
 resolve_head_commit() {
@@ -636,6 +780,39 @@ run_and_maybe_log() {
   "$cmd_name" "$@"
 }
 
+kill_process_tree() {
+  local root_pid="$1"
+  local child_pid=""
+
+  if [[ -z "${root_pid:-}" ]]; then
+    return 0
+  fi
+
+  while IFS= read -r child_pid; do
+    [[ -z "$child_pid" ]] && continue
+    kill_process_tree "$child_pid"
+  done < <(pgrep -P "$root_pid" 2>/dev/null || true)
+
+  kill "$root_pid" >/dev/null 2>&1 || true
+  sleep 1
+  kill -9 "$root_pid" >/dev/null 2>&1 || true
+}
+
+with_mcp_servers() {
+  local scoped_servers="$1"
+  shift
+  local previous_servers="$MCP_SERVERS"
+  local exit_code=0
+  MCP_SERVERS="$scoped_servers"
+  if "$@"; then
+    exit_code=0
+  else
+    exit_code=$?
+  fi
+  MCP_SERVERS="$previous_servers"
+  return "$exit_code"
+}
+
 run_with_timeout() {
   local timeout_seconds="$1"
   local output_file="$2"
@@ -680,9 +857,10 @@ run_with_timeout() {
     if [[ "$timeout_seconds" -gt 0 ]] && [[ "$elapsed" -ge "$timeout_seconds" ]]; then
       debug_log "Gemini attempt exceeded timeout (${timeout_seconds}s). Terminating PID $pid."
       timed_out=true
-      kill "$pid" >/dev/null 2>&1 || true
+      kill_process_tree "$pid"
+      kill "$tee_pid" >/dev/null 2>&1 || true
       sleep 1
-      kill -9 "$pid" >/dev/null 2>&1 || true
+      kill -9 "$tee_pid" >/dev/null 2>&1 || true
       break
     fi
   done
@@ -699,11 +877,14 @@ run_with_timeout() {
   return "$cmd_exit"
 }
 
+is_quota_exhausted_text() {
+  local text="$1"
+  echo "$text" | grep -Eqi "TerminalQuotaError|exhausted your capacity|quota will reset|code:[[:space:]]*429|status:[[:space:]]*RESOURCE_EXHAUSTED"
+}
+
 is_quota_exhausted_output() {
   local output_file="$1"
-  grep -Eqi \
-    "TerminalQuotaError|exhausted your capacity|quota will reset|code:[[:space:]]*429|status:[[:space:]]*RESOURCE_EXHAUSTED" \
-    "$output_file"
+  grep -Eqi "TerminalQuotaError|exhausted your capacity|quota will reset|code:[[:space:]]*429|status:[[:space:]]*RESOURCE_EXHAUSTED" "$output_file"
 }
 
 is_model_not_found_output() {
@@ -752,6 +933,71 @@ is_jira_comment_confirmation_output() {
   local output_file="$1"
   local ticket="$2"
   grep -Eqi "Jira comment posted to[[:space:]]+$ticket" "$output_file"
+}
+
+is_postman_qa_success_output() {
+  local output_file="$1"
+  local failed_count=""
+
+  if grep -Eqi "postman qa status:[[:space:]]*(failed|red)|postman qa failed|failed tests" "$output_file"; then
+    return 1
+  fi
+
+  failed_count="$(
+    grep -Eoi "postman results:[^[:cntrl:]]*failed[[:space:]]*=[[:space:]]*[0-9]+" "$output_file" \
+      | tail -n 1 \
+      | grep -Eo "[0-9]+$" || true
+  )"
+
+  if [[ -z "$failed_count" ]]; then
+    failed_count="$(
+      grep -Eoi "failed[[:space:]]*:[[:space:]]*[0-9]+" "$output_file" \
+        | tail -n 1 \
+        | grep -Eo "[0-9]+$" || true
+    )"
+  fi
+
+  if [[ -z "$failed_count" ]] || [[ "$failed_count" != "0" ]]; then
+    return 1
+  fi
+
+  if ! grep -Eqi "Postman target:[[:space:]]*workspace_id=[^;[:space:]]+;[[:space:]]*collection_id=[^[:space:]]+" "$output_file"; then
+    return 1
+  fi
+
+  if ! grep -Eqi "Postman collection proof:" "$output_file"; then
+    return 1
+  fi
+
+  grep -Eqi "Postman QA completed successfully|Postman QA status:[[:space:]]*(success|green|passed)|All Postman tests passed" "$output_file"
+}
+
+is_jira_qa_comment_confirmation_output() {
+  local output_file="$1"
+  local ticket="$2"
+  grep -Eqi "Jira QA comment posted to[[:space:]]+$ticket" "$output_file"
+}
+
+is_jira_qa_comment_body_valid_output() {
+  local output_file="$1"
+
+  if grep -Eqi "Automated Postman QA failed|Postman QA failed|Results:[[:space:]].*failed[^0-9]*[1-9]|failed[[:space:]]*=[[:space:]]*[1-9]" "$output_file"; then
+    return 1
+  fi
+
+  grep -Eqi "^✅ QA Complete" "$output_file" || return 1
+  grep -Eqi "^Postman Collection Run:" "$output_file" || return 1
+  grep -Eqi "^Results:[[:space:]].*(0 failed|failed[[:space:]]*=[[:space:]]*0)" "$output_file" || return 1
+  grep -Eqi "^New Endpoints Added To Collection:" "$output_file" || return 1
+  grep -Eqi "^Test Proof:" "$output_file" || return 1
+  grep -Eqi "^Notes:" "$output_file" || return 1
+
+  # Enforce plain header style (no markdown-bold section labels).
+  if grep -Eqi "^\*\*(Postman Collection Run|Results|New Endpoints Added To Collection|Test Proof|Notes):\*\*" "$output_file"; then
+    return 1
+  fi
+
+  return 0
 }
 
 persist_planning_result() {
@@ -925,6 +1171,11 @@ is_proceed_request() {
   echo "$prompt" | grep -Eqi "proceed[[:space:]]+with([[:space:]]+the)?[[:space:]]+implementation"
 }
 
+is_qa_request() {
+  local prompt="$1"
+  echo "$prompt" | grep -Eqi "^[[:space:]]*(qa|quality assurance|quality-assurance)([[:space:]]|$)|run[[:space:]]+(the[[:space:]]+)?qa([[:space:]]|$)|postman[[:space:]]+(qa|tests?)"
+}
+
 normalize_phase_token() {
   local raw
   raw="$(echo "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
@@ -932,7 +1183,8 @@ normalize_phase_token() {
   case "$raw" in
     plan|planning) echo "plan" ;;
     implement|implementation|proceed) echo "implement" ;;
-    review|qa) echo "review" ;;
+    review) echo "review" ;;
+    qa|qualityassurance|quality-assurance) echo "qa" ;;
     *) echo "" ;;
   esac
 }
@@ -942,6 +1194,11 @@ resolve_execution_phase() {
   normalized="$(normalize_phase_token "$PHASE_OVERRIDE")"
   if [[ -n "$normalized" ]]; then
     echo "$normalized"
+    return 0
+  fi
+
+  if [[ "$QA_MODE" == "true" ]] || is_qa_request "$USER_PROMPT"; then
+    echo "qa"
     return 0
   fi
 
@@ -960,7 +1217,7 @@ resolve_execution_phase() {
 
 is_transient_mcp_failure_text() {
   local text="$1"
-  echo "$text" | grep -Eqi "fetch failed|connection closed|connection reset|connection refused|timed out|timeout|resource exhausted|429|temporarily unavailable|try again|retry|service unavailable|broken pipe|econn"
+  echo "$text" | grep -Eqi "fetch failed|connection closed|connection reset|connection refused|timed out|timeout|temporarily unavailable|try again later|service unavailable|broken pipe|econn"
 }
 
 run_mcp_step_with_retry() {
@@ -983,9 +1240,20 @@ run_mcp_step_with_retry() {
   for ((attempt = 1; attempt <= max_attempts; attempt++)); do
     if "$@"; then
       return 0
+    else
+      exit_code=$?
     fi
-    exit_code=$?
     snippet="$(tail -n 60 "$log_file" 2>/dev/null || true)"
+
+    if is_quota_exhausted_text "$snippet"; then
+      echo "$step_name failed due to Gemini model quota exhaustion (attempt $attempt/$max_attempts). Not retrying." >&2
+      if [[ -n "$snippet" ]]; then
+        echo "$step_name output snippet:" >&2
+        echo "$snippet" >&2
+      fi
+      echo "Suggestion: wait for quota reset or configure a fallback model chain with AGENT_GEMINI_MODELS." >&2
+      return "$exit_code"
+    fi
 
     if [[ "$attempt" -ge "$max_attempts" ]]; then
       echo "$step_name failed after $attempt attempt(s)." >&2
@@ -1244,6 +1512,350 @@ After fixing, I will re-run housekeeping and verification."; then
   return 1
 }
 
+run_postman_mcp_qa() {
+  local qa_prompt
+  local output_file
+  local ticket
+  local branch
+  local commit
+  local git_status_summary
+  local target_constraints
+  local max_runs
+  local plan_hash
+  local git_hash
+  local cache_key
+  local cache_file
+  local used_resume=false
+
+  output_file=$(mktemp)
+  : > "$POSTMAN_QA_LOG_FILE"
+
+  ticket="$(resolve_effective_ticket_id)"
+  branch="$(git branch --show-current 2>/dev/null || echo "unknown")"
+  commit="$(resolve_head_commit)"
+  git_status_summary="$(truncate_text_for_prompt "$(summarize_git_status_for_prompt)" 1200)"
+  target_constraints="$(build_postman_target_constraints "$POSTMAN_QA_WORKSPACE_NAME" "$POSTMAN_QA_COLLECTION_NAME" "$POSTMAN_QA_WORKSPACE_ID" "$POSTMAN_QA_COLLECTION_ID")"
+  max_runs="$(normalize_positive_int "$POSTMAN_QA_MAX_RUNS" 2)"
+  plan_hash="$(hash_file "$STATE_DIR/active_plan.md")"
+  git_hash="$(hash_text "$git_status_summary")"
+  cache_key="$(hash_text "postman-qa|ticket=${ticket:-none}|commit=$commit|plan=$plan_hash|git=$git_hash")"
+  cache_file="$(aux_cache_file_for "postman_qa" "$cache_key")"
+
+  {
+    echo "== Postman MCP QA =="
+    echo "Ticket: ${ticket:-none}"
+    echo "Branch: $branch"
+    echo "Commit: $commit"
+    echo "Workspace target: $POSTMAN_QA_WORKSPACE_NAME (${POSTMAN_QA_WORKSPACE_ID:-id-not-set})"
+    echo "Collection target: $POSTMAN_QA_COLLECTION_NAME (${POSTMAN_QA_COLLECTION_ID:-id-not-set})"
+    echo "MCP servers: $POSTMAN_QA_MCP_SERVERS"
+    echo "Max QA runs: $max_runs"
+    echo "Cache key: $cache_key"
+    echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
+    echo ""
+  } >> "$POSTMAN_QA_LOG_FILE"
+
+  if read_aux_cache "postman_qa" "$cache_key" "$output_file"; then
+    if is_postman_qa_success_output "$output_file"; then
+      echo "Using cached Postman QA output."
+      cat "$output_file"
+      {
+        echo "Mode: cache-hit"
+        echo "Result: success"
+        echo "Postman QA Status: success"
+        echo ""
+        cat "$output_file"
+        echo ""
+        echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
+      } >> "$POSTMAN_QA_LOG_FILE"
+      rm -f "$output_file"
+      return 0
+    fi
+    rm -f "$cache_file"
+  fi
+
+  qa_prompt="$(build_qa_prompt "Run the QA step for the current backend implementation using Postman MCP tools.
+
+MANDATORY:
+- Use Postman MCP tools only.
+$target_constraints
+- First resolve and print the selected workspace_id and collection_id.
+- If the exact target cannot be resolved, stop immediately.
+- If IDs are not set and there are multiple name matches, stop immediately as ambiguous.
+- Run the target collection tests once.
+- If the current implementation added new endpoint(s), create matching requests in the same collection and add assertions/tests for each new endpoint.
+- Re-run after collection updates only when needed.
+- Maximum run attempts: $max_runs
+- If tests still fail after max attempts, stop and report failures (do not loop indefinitely).
+- Keep collection edits scoped to this ticket.
+- Include clear proof with workspace_id, collection_id, totals (total/passed/failed), and failed request names (if any).
+
+Context:
+- Ticket: ${ticket:-none}
+- Branch: $branch
+- Commit: $commit
+
+Git status summary:
+$git_status_summary
+
+Return exactly:
+1) Postman QA completed successfully
+2) Postman QA status: success
+3) Postman target: workspace_id=<id>; collection_id=<id>
+4) Postman results: total=<n>; passed=<n>; failed=<n>
+5) Postman collection proof: <concise markdown proof with totals and added endpoints/tests>." \
+    "${ticket:-}" "$branch" "$commit" "$git_status_summary")"
+
+  if should_attempt_aux_resume; then
+    used_resume=true
+    if with_mcp_servers "$POSTMAN_QA_MCP_SERVERS" run_gemini_resume_headless "$qa_prompt" > "$output_file" 2>&1; then
+      cat "$output_file"
+      if is_postman_qa_success_output "$output_file"; then
+        {
+          echo "Mode: resume-latest"
+          echo "Result: success"
+          echo "Postman QA Status: success"
+          echo ""
+          cat "$output_file"
+          echo ""
+          echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
+        } >> "$POSTMAN_QA_LOG_FILE"
+        write_aux_cache "postman_qa" "$cache_key" "$output_file"
+        rm -f "$output_file"
+        return 0
+      fi
+    fi
+
+    cat "$output_file"
+    {
+      echo "Mode: resume-latest"
+      echo "Result: failed, falling back to full-context run"
+      echo ""
+      cat "$output_file"
+      echo ""
+    } >> "$POSTMAN_QA_LOG_FILE"
+  else
+    {
+      echo "Mode: resume-latest"
+      echo "Result: skipped by resume policy"
+      echo ""
+    } >> "$POSTMAN_QA_LOG_FILE"
+  fi
+
+  if [[ "$used_resume" == "true" ]]; then
+    echo "Session resumption failed for Postman QA. Running with full context."
+  else
+    echo "Running Postman QA with full context (resume skipped)."
+  fi
+  if with_mcp_servers "$POSTMAN_QA_MCP_SERVERS" run_gemini_headless "$qa_prompt" > "$output_file" 2>&1; then
+    cat "$output_file"
+    if is_postman_qa_success_output "$output_file"; then
+      {
+        echo "Mode: full-context"
+        echo "Result: success"
+        echo "Postman QA Status: success"
+        echo ""
+        cat "$output_file"
+        echo ""
+        echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
+      } >> "$POSTMAN_QA_LOG_FILE"
+      write_aux_cache "postman_qa" "$cache_key" "$output_file"
+      rm -f "$output_file"
+      return 0
+    fi
+  fi
+
+  cat "$output_file"
+  {
+    echo "Mode: full-context"
+    echo "Result: failed"
+    echo "Postman QA Status: failed"
+    echo ""
+    cat "$output_file"
+    echo ""
+    echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
+  } >> "$POSTMAN_QA_LOG_FILE"
+  rm -f "$output_file"
+  return 1
+}
+
+run_post_qa_jira_update() {
+  local ticket="$1"
+  local jira_prompt
+  local output_file
+  local branch
+  local commit
+  local git_status_summary
+  local qa_summary
+  local git_hash
+  local qa_hash
+  local cache_key
+  local cache_file
+  local used_resume=false
+
+  output_file=$(mktemp)
+  : > "$JIRA_QA_LOG_FILE"
+
+  branch="$(git branch --show-current 2>/dev/null || echo "unknown")"
+  commit="$(resolve_head_commit)"
+  git_status_summary="$(truncate_text_for_prompt "$(summarize_git_status_for_prompt)" 1000)"
+  qa_summary="$(summarize_log_for_prompt "$POSTMAN_QA_LOG_FILE" "Postman QA summary:" 20 1500)"
+  git_hash="$(hash_text "$git_status_summary")"
+  qa_hash="$(hash_text "$qa_summary")"
+  cache_key="$(hash_text "jira-qa|ticket=$ticket|commit=$commit|git=$git_hash|qa=$qa_hash")"
+  cache_file="$(aux_cache_file_for "jira_qa" "$cache_key")"
+
+  {
+    echo "== Jira QA Update =="
+    echo "Ticket: $ticket"
+    echo "Branch: $branch"
+    echo "Commit: $commit"
+    echo "MCP servers: $JIRA_QA_MCP_SERVERS"
+    echo "Cache key: $cache_key"
+    echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
+    echo ""
+  } >> "$JIRA_QA_LOG_FILE"
+
+  if ! is_postman_qa_success_output "$POSTMAN_QA_LOG_FILE"; then
+    {
+      echo "Result: skipped"
+      echo "Reason: Postman QA output is not in a successful-proof state (requires failed=0 endpoint-call proof)."
+      echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
+      echo ""
+    } >> "$JIRA_QA_LOG_FILE"
+    rm -f "$output_file"
+    return 1
+  fi
+
+  if read_aux_cache "jira_qa" "$cache_key" "$output_file"; then
+    if is_jira_qa_comment_confirmation_output "$output_file" "$ticket" && is_jira_qa_comment_body_valid_output "$output_file"; then
+      echo "Using cached Jira QA update output."
+      cat "$output_file"
+      {
+        echo "Mode: cache-hit"
+        echo "Result: success"
+        echo ""
+        cat "$output_file"
+        echo ""
+        echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
+      } >> "$JIRA_QA_LOG_FILE"
+      rm -f "$output_file"
+      return 0
+    fi
+    rm -f "$cache_file"
+  fi
+
+  jira_prompt="$(build_qa_prompt "Post a Jira comment for ticket $ticket after successful QA.
+
+MANDATORY:
+- Use Atlassian MCP tools only.
+- Add a comment on Jira issue $ticket using tool addCommentToJiraIssue.
+- Use only Postman run evidence from QA logs for test proof.
+- Do NOT use repository/code-change descriptions as QA proof.
+- If Postman evidence is not successful endpoint-call proof with failed=0, do NOT post a comment and return a failure.
+- The comment body must follow exactly this format:
+  ✅ QA Complete
+
+  Postman Collection Run: <collection name> (<collection id>)
+  Results: <n> tests passed, 0 failed.
+  New Endpoints Added To Collection:
+  <endpoint list, one per line; or 'None'>
+
+  Test Proof:
+  <one line per endpoint call proving success, include request name + method/path + status + assertion result>
+
+  Notes:
+  <short factual notes>
+- Test Proof must include successful endpoint calls from Postman run (request name, method/path, status code, assertion pass result).
+- Do not use markdown bold labels (no **...** around section names).
+- Keep content factual and based on repository state and QA logs below.
+
+Context:
+- Ticket: $ticket
+- Branch: $branch
+- Commit: $commit
+
+Git status summary:
+$git_status_summary
+
+Postman QA summary:
+$qa_summary
+
+Return exactly:
+1) Jira QA comment posted to $ticket
+2) The final QA comment body you posted." \
+    "$ticket" "$branch" "$commit" "$git_status_summary")"
+
+  if should_attempt_aux_resume; then
+    used_resume=true
+    if with_mcp_servers "$JIRA_QA_MCP_SERVERS" run_gemini_resume_headless "$jira_prompt" > "$output_file" 2>&1; then
+      cat "$output_file"
+      if is_jira_qa_comment_confirmation_output "$output_file" "$ticket" && is_jira_qa_comment_body_valid_output "$output_file"; then
+        {
+          echo "Mode: resume-latest"
+          echo "Result: success"
+          echo ""
+          cat "$output_file"
+          echo ""
+          echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
+        } >> "$JIRA_QA_LOG_FILE"
+        write_aux_cache "jira_qa" "$cache_key" "$output_file"
+        rm -f "$output_file"
+        return 0
+      fi
+    fi
+
+    cat "$output_file"
+    {
+      echo "Mode: resume-latest"
+      echo "Result: failed, falling back to full-context run"
+      echo ""
+      cat "$output_file"
+      echo ""
+    } >> "$JIRA_QA_LOG_FILE"
+  else
+    {
+      echo "Mode: resume-latest"
+      echo "Result: skipped by resume policy"
+      echo ""
+    } >> "$JIRA_QA_LOG_FILE"
+  fi
+
+  if [[ "$used_resume" == "true" ]]; then
+    echo "Session resumption failed for Jira QA update. Running with full context."
+  else
+    echo "Running Jira QA update with full context (resume skipped)."
+  fi
+  if with_mcp_servers "$JIRA_QA_MCP_SERVERS" run_gemini_headless "$jira_prompt" > "$output_file" 2>&1; then
+    cat "$output_file"
+    if is_jira_qa_comment_confirmation_output "$output_file" "$ticket" && is_jira_qa_comment_body_valid_output "$output_file"; then
+      {
+        echo "Mode: full-context"
+        echo "Result: success"
+        echo ""
+        cat "$output_file"
+        echo ""
+        echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
+      } >> "$JIRA_QA_LOG_FILE"
+      write_aux_cache "jira_qa" "$cache_key" "$output_file"
+      rm -f "$output_file"
+      return 0
+    fi
+  fi
+
+  cat "$output_file"
+  {
+    echo "Mode: full-context"
+    echo "Result: failed"
+    echo ""
+    cat "$output_file"
+    echo ""
+    echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
+  } >> "$JIRA_QA_LOG_FILE"
+  rm -f "$output_file"
+  return 1
+}
+
 run_post_review_jira_update() {
   local ticket="$1"
   local jira_prompt
@@ -1430,7 +2042,10 @@ run_post_review_container_cleanup() {
     return 0
   fi
 
-  mapfile -t ids < <(docker ps -aq --filter "status=exited" --filter "label=org.testcontainers=true" 2>/dev/null || true)
+  ids=()
+  while IFS= read -r id; do
+    [[ -n "$id" ]] && ids+=("$id")
+  done < <(docker ps -aq --filter "status=exited" --filter "label=org.testcontainers=true" 2>/dev/null || true)
   if [[ ${#ids[@]} -gt 0 ]]; then
     if ! docker rm "${ids[@]}" >/dev/null 2>&1; then
       echo "Failed to remove one or more exited Testcontainers containers." >&2
@@ -1439,13 +2054,19 @@ run_post_review_container_cleanup() {
     removed_containers="${#ids[@]}"
   fi
 
-  mapfile -t ids < <(docker network ls -q --filter "label=org.testcontainers=true" 2>/dev/null || true)
+  ids=()
+  while IFS= read -r id; do
+    [[ -n "$id" ]] && ids+=("$id")
+  done < <(docker network ls -q --filter "label=org.testcontainers=true" 2>/dev/null || true)
   if [[ ${#ids[@]} -gt 0 ]]; then
     network_output="$(docker network rm "${ids[@]}" 2>/dev/null || true)"
     removed_networks="$(echo "$network_output" | sed '/^[[:space:]]*$/d' | wc -l | tr -d '[:space:]')"
   fi
 
-  mapfile -t ids < <(docker volume ls -q --filter "label=org.testcontainers=true" 2>/dev/null || true)
+  ids=()
+  while IFS= read -r id; do
+    [[ -n "$id" ]] && ids+=("$id")
+  done < <(docker volume ls -q --filter "label=org.testcontainers=true" 2>/dev/null || true)
   if [[ ${#ids[@]} -gt 0 ]]; then
     volume_output="$(docker volume rm "${ids[@]}" 2>/dev/null || true)"
     removed_volumes="$(echo "$volume_output" | sed '/^[[:space:]]*$/d' | wc -l | tr -d '[:space:]')"
@@ -1484,9 +2105,12 @@ run_post_review_cleanup() {
       "$PLANNING_LOG_FILE"
       "$IMPLEMENTATION_LOG_FILE"
       "$REVIEW_DEBUG_LOG_FILE"
+      "$QA_DEBUG_LOG_FILE"
       "$REVIEW_LOG_FILE"
       "$SONAR_MCP_LOG_FILE"
       "$JIRA_REVIEW_LOG_FILE"
+      "$POSTMAN_QA_LOG_FILE"
+      "$JIRA_QA_LOG_FILE"
     )
   fi
 
@@ -1507,6 +2131,7 @@ run_post_review_cleanup() {
 
 PROCEED_MODE="${AGENT_PROCEED:-false}"
 REVIEW_MODE="${AGENT_REVIEW:-false}"
+QA_MODE="${AGENT_QA:-false}"
 PHASE="$(resolve_execution_phase)"
 
 if [[ "$PHASE" == "review" ]]; then
@@ -1644,6 +2269,73 @@ if [[ "$PHASE" == "review" ]]; then
     fi
   elif [[ $EXIT_CODE -eq 0 ]] && [[ "$REVIEW_CHANGES_APPROVED" != "true" ]]; then
     echo "Skipping post-review cleanup in proposal-only review mode."
+  fi
+
+  exit $EXIT_CODE
+
+elif [[ "$PHASE" == "qa" ]]; then
+  # --- QA MODE ---
+  echo "QA mode detected."
+  EXIT_CODE=0
+  GEMINI_ATTEMPT_TIMEOUT_SECONDS="$(normalize_positive_int "$QA_ATTEMPT_TIMEOUT_SECONDS" 600)"
+
+  if [[ "$QA_VERBOSE" == "true" ]]; then
+    {
+      echo "== QA Debug =="
+      echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
+      echo "Prompt: $USER_PROMPT"
+      echo "Branch: $(git branch --show-current 2>/dev/null || echo 'unknown')"
+      echo "Ticket scope: ${ACTIVE_TICKET:-none}"
+      echo "Postman QA mode: $(normalize_mode_value "$POSTMAN_QA_MODE")"
+      echo "QA Jira mode: $(normalize_mode_value "$QA_JIRA_MODE")"
+      echo "Postman workspace target: $POSTMAN_QA_WORKSPACE_NAME (${POSTMAN_QA_WORKSPACE_ID:-id-not-set})"
+      echo "Postman collection target: $POSTMAN_QA_COLLECTION_NAME (${POSTMAN_QA_COLLECTION_ID:-id-not-set})"
+      echo "Postman QA MCP servers: $POSTMAN_QA_MCP_SERVERS"
+      echo "QA Jira MCP servers: $JIRA_QA_MCP_SERVERS"
+      echo "Postman QA max runs: $(normalize_positive_int "$POSTMAN_QA_MAX_RUNS" 2)"
+      echo "QA per-attempt timeout: ${GEMINI_ATTEMPT_TIMEOUT_SECONDS}s"
+      echo "Require QA Jira comment: $REQUIRE_QA_JIRA_COMMENT"
+      echo "Model chain: $GEMINI_MODELS_CSV"
+      echo ""
+    } > "$QA_DEBUG_LOG_FILE"
+    ACTIVE_DEBUG_LOG_FILE="$QA_DEBUG_LOG_FILE"
+    echo "Verbose QA logging enabled. Log: $QA_DEBUG_LOG_FILE"
+  fi
+
+  if should_run_postman_qa "$USER_PROMPT"; then
+    echo "Running Postman MCP QA. Log: $POSTMAN_QA_LOG_FILE"
+    if run_and_maybe_log run_mcp_step_with_retry "Postman MCP QA" "$POSTMAN_QA_LOG_FILE" run_postman_mcp_qa; then
+      echo "Postman MCP QA completed. Log: $POSTMAN_QA_LOG_FILE"
+    else
+      echo "Postman MCP QA failed. See $POSTMAN_QA_LOG_FILE" >&2
+      EXIT_CODE=1
+    fi
+  else
+    echo "Skipping Postman QA (mode: $(normalize_mode_value "$POSTMAN_QA_MODE"))."
+  fi
+
+  if [[ $EXIT_CODE -eq 0 ]]; then
+    if should_run_jira_qa_update "$USER_PROMPT"; then
+      QA_TICKET="$(resolve_effective_ticket_id)"
+      if [[ -z "$QA_TICKET" ]]; then
+        echo "Unable to resolve Jira ticket for QA update." >&2
+        if [[ "$REQUIRE_QA_JIRA_COMMENT" == "true" ]]; then
+          EXIT_CODE=1
+        fi
+      else
+        echo "Posting Jira QA update for $QA_TICKET. Log: $JIRA_QA_LOG_FILE"
+        if run_and_maybe_log run_mcp_step_with_retry "Jira QA update" "$JIRA_QA_LOG_FILE" run_post_qa_jira_update "$QA_TICKET"; then
+          echo "Jira QA update posted to $QA_TICKET."
+        else
+          echo "Failed to post Jira QA update to $QA_TICKET. See $JIRA_QA_LOG_FILE" >&2
+          if [[ "$REQUIRE_QA_JIRA_COMMENT" == "true" ]]; then
+            EXIT_CODE=1
+          fi
+        fi
+      fi
+    elif [[ "$POST_QA_JIRA_COMMENT" == "true" ]]; then
+      echo "Skipping Jira QA update (mode: $(normalize_mode_value "$QA_JIRA_MODE"))."
+    fi
   fi
 
   exit $EXIT_CODE

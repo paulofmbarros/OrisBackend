@@ -20,7 +20,7 @@ The workflow consists of two phases:
 6. Optionally set a **Wait timer** if you want a delay before auto-approval
 7. Click **Save protection rules**
 
-This creates the approval gate that will show a "Review deployments" button when the workflow reaches the implementation phase.
+This creates the approval gate that will show a "Review deployments" button when the `/proceed` implementation workflow runs.
 
 ### 2. Configure Gemini API Key (Required)
 
@@ -50,29 +50,24 @@ The workflow can be triggered in several ways:
    - Role: `backend`
    - Runtime: `gemini`
 
-#### Option B: PR Trigger
-- Automatically triggers when a PR is opened/updated
-- Extracts Jira ticket key from PR title or body (e.g., "OR-25")
-- Example PR title: `[OR-25] Add user authentication`
-
-#### Option C: Issue Comment Trigger
+#### Option B: Issue/PR Comment Trigger
 - Comment on an issue/PR: `/agent Work on Jira ticket OR-25`
 - The workflow will run and post results as a comment
 
 ### 4. Approval Process
 
-1. **Plan Phase** runs automatically and generates a plan
+1. **Plan Phase** runs after you explicitly trigger it and generates a plan
 2. The plan output is visible in **three places**:
    - **Workflow Summary** (Actions tab → workflow run → top of page) - Full output, no download needed
    - **PR/Issue Comments** - Automatically posted for easy review
    - **Check Runs** - Status summary in the checks section
 3. **Review the plan** in the comment or check run
 4. **Choose an action:**
-   - ✅ **Approve**: Click **Review deployments** button or comment `/proceed`
+   - ✅ **Approve**: Comment `/proceed`
    - 🔄 **Revise**: Comment `/revise <your feedback>` to request changes
    - ❌ **Cancel**: Close the issue/PR
 5. **If revising**: A new plan is generated based on your feedback
-6. **If approving**: **Implementation Phase** runs after approval
+6. **If approving**: The `/proceed` workflow runs the implementation phase (and may require **Review deployments** approval, based on environment rules)
 7. Changes are committed to the branch
 
 ### Revision Examples
@@ -86,8 +81,8 @@ The workflow can be triggered in several ways:
 
 ## Workflow Files
 
-- `.github/workflows/agent-plan.yml`: Main workflow for planning and implementation
-- `.github/workflows/agent-proceed.yml`: Alternative workflow triggered by `/proceed` comment
+- `.github/workflows/agent-plan.yml`: Plan generation workflow
+- `.github/workflows/agent-proceed.yml`: Implementation workflow triggered by `/proceed` comment
 - `.github/workflows/agent-revise.yml`: Workflow for revising plans based on feedback
 
 ## Customization
@@ -103,7 +98,7 @@ Edit `.github/workflows/agent-plan.yml` and modify the `runtime` input default o
 
 ### Modify Approval Requirements
 
-Edit the `environment` section in the `implement` job:
+Edit the `environment` section in the `proceed` job inside `.github/workflows/agent-proceed.yml`:
 ```yaml
 environment: 
   name: agent-implementation
@@ -126,19 +121,19 @@ environment:
 ## Example Usage
 
 ### Basic Flow
-1. Create a PR with title: `[OR-25] Implement user authentication`
-2. The workflow automatically triggers and generates a plan
-3. Review the plan in the PR comment
-4. Click "Review deployments" → "Approve and deploy"
+1. Start a plan explicitly (Actions tab run or comment `/agent Work on Jira ticket OR-25`)
+2. Review the plan in the PR/issue comment
+3. Comment `/proceed` to start implementation
+4. If prompted, click "Review deployments" → "Approve and deploy"
 5. Implementation runs and commits changes
 6. Review the changes and merge the PR
 
 ### With Plan Revision
-1. Create a PR with title: `[OR-25] Implement user authentication`
-2. The workflow generates a plan
-3. Review the plan and notice it uses session-based auth
-4. Comment: `/revise Please use JWT tokens instead of session-based authentication`
-5. A revised plan is generated and posted
-6. Review the revised plan
-7. If satisfied, comment `/proceed` or approve via "Review deployments"
+1. Start a plan explicitly (Actions tab run or comment `/agent ...`)
+2. Review the plan and notice it uses session-based auth
+3. Comment: `/revise Please use JWT tokens instead of session-based authentication`
+4. A revised plan is generated and posted
+5. Review the revised plan
+6. If satisfied, comment `/proceed`
+7. If prompted, approve via "Review deployments"
 8. Implementation runs with the revised plan

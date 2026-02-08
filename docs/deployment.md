@@ -37,6 +37,7 @@ If deployment fails or issues are detected:
 - plan metadata (latest): `tmp/state/artifacts/*/plan.json`
 - implementation metadata (latest): `tmp/state/artifacts/*/implement.json`
 - review metadata (latest): `tmp/state/artifacts/*/review.json`
+- qa metadata (latest): `tmp/state/artifacts/*/qa.json`
 - publish output log: `tmp/state/publish.log`
 - smoke test log: `tmp/state/smoke_test.log`
 - rolling run summary: `tmp/state/runs.log`
