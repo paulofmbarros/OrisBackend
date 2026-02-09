@@ -88,7 +88,7 @@ jobs:
 
       - name: Upload vulnerability report
         if: steps.vuln_scan.outputs.vulnerable == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: vulnerability-report-${{ github.run_number }}
           path: vulnerability-report.txt
@@ -167,7 +167,7 @@ jobs:
       # -----------------------------
       - name: Upload Test Results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: test-results-${{ github.run_number }}
           path: ./TestResults
@@ -184,7 +184,7 @@ jobs:
             -o ./publish
 
       - name: Upload Build Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: web-app-package-${{ github.run_number }}
           path: ./publish
