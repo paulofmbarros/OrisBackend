@@ -298,7 +298,7 @@ jobs:
           cat plan-artifact/plan-output.txt
 
       - name: Upload revised plan artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: agent-plan
           path: plan-artifact/

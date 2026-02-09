@@ -238,7 +238,7 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Upload plan artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: agent-plan
           path: plan-output-temp/
@@ -253,7 +253,7 @@ jobs:
           echo "${{ steps.context.outputs.JIRA_KEY }}" > plan-context/jira_ticket.txt
 
       - name: Upload Context
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: agent-context
           path: plan-context/
