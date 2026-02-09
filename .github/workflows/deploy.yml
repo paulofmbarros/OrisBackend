@@ -141,7 +141,7 @@ jobs:
       # Download artifact from verified build run
       # --------------------------------------------------
       - name: Download build artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: web-app-package-${{ steps.find_build.outputs.run_number }}
           path: ./publish
