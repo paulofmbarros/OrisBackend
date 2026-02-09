@@ -115,7 +115,7 @@ jobs:
       # Cache Sonar Scanner
       # -----------------------------
       - name: Cache Sonar Scanner
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.dotnet/tools
           key: ${{ runner.os }}-dotnet-tools-sonarscanner-${{ hashFiles('**/global.json') }}
