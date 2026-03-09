@@ -1,4 +1,4 @@
-name: "Lint Commit Messages"
+name: "Lint PR Title"
 
 on:
   pull_request:
@@ -15,9 +15,10 @@ jobs:
     name: Validate PR Title
     if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
+
     steps:
       - name: Validate PR title
-        uses: amannn/action-semantic-pull-request@v5
+        uses: amannn/action-semantic-pull-request@v6
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -37,10 +38,10 @@ jobs:
 
           subjectPatternError: |
             The PR title does not match the required format!
-            
+
             ✅ Correct Example:
             "feat: Add user login page OR-25"
-            
+
             ❌ Incorrect Examples:
             "feat: add user login" (Lowercase subject, no ticket)
             "feat: Add user login" (Missing ticket)
