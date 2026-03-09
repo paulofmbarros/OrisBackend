@@ -8,11 +8,11 @@
 
     <ItemGroup>
         <InternalsVisibleTo Include="Oris.Api.Tests" />
-    </ItemGroup>
+    </ItemGroup>s
 
     <ItemGroup>
         <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.2"/>
-        <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.2"/>
+        <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.3"/>
     </ItemGroup>
 
     <ItemGroup>
