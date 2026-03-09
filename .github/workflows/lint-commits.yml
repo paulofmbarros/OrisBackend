@@ -13,13 +13,14 @@ permissions:
 jobs:
   main:
     name: Validate PR Title
+    if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
-      - uses: amannn/action-semantic-pull-request@v5
+      - name: Validate PR title
+        uses: amannn/action-semantic-pull-request@v5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          # 1. Allowed Types (Must match commitlint.config.js)
           types: |
             feat
             fix
@@ -32,16 +33,8 @@ jobs:
             ci
             revert
 
-          # 2. Enforce Format: "Start with Capital ... end with Ticket"
-          # Regex breakdown:
-          # ^[A-Z]        -> Subject must start with an Uppercase letter
-          # .+            -> Followed by any text
-          # \s            -> Followed by a space
-          # [A-Z]+-[0-9]+ -> Followed by Ticket Key (e.g., OR-25)
-          # $             -> End of string
           subjectPattern: ^[A-Z].+\s[A-Z]+-[0-9]+$
 
-          # 3. Custom Error Message to help your team
           subjectPatternError: |
             The PR title does not match the required format!
             
@@ -53,5 +46,4 @@ jobs:
             "feat: Add user login" (Missing ticket)
             "feat: Add user login OR-25 #done" (Extra text after ticket)
 
-          # 4. Check single commits too (prevents bypassing if PR has only 1 commit)
           validateSingleCommit: true
