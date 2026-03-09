@@ -99,12 +99,12 @@ jobs:
           exit 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '20'
 
       - name: Cache npm packages
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.npm
           key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
@@ -238,7 +238,7 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Upload plan artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: agent-plan
           path: plan-output-temp/
@@ -253,7 +253,7 @@ jobs:
           echo "${{ steps.context.outputs.JIRA_KEY }}" > plan-context/jira_ticket.txt
 
       - name: Upload Context
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: agent-context
           path: plan-context/

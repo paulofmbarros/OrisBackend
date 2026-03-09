@@ -153,7 +153,7 @@ jobs:
           workflow: agent-plan.yml
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '20'
 
@@ -298,7 +298,7 @@ jobs:
           cat plan-artifact/plan-output.txt
 
       - name: Upload revised plan artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: agent-plan
           path: plan-artifact/
