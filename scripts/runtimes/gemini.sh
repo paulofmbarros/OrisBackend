@@ -3,6 +3,7 @@ set -euo pipefail
 
 # Import Core Library
 source "$(dirname "$0")/../lib/agent_core.sh"
+source "$(dirname "$0")/../lib/mcp_servers.sh"
 
 CONTRACT_FILE="$1"
 USER_PROMPT="$2"
@@ -14,7 +15,10 @@ SONAR_MCP_LOG_FILE="${AGENT_SONAR_MCP_LOG_FILE:-$STATE_DIR/sonar_mcp_review.log}
 JIRA_REVIEW_LOG_FILE="${AGENT_JIRA_REVIEW_LOG_FILE:-$STATE_DIR/jira_review_update.log}"
 POSTMAN_QA_LOG_FILE="${AGENT_POSTMAN_QA_LOG_FILE:-$STATE_DIR/postman_mcp_qa.log}"
 JIRA_QA_LOG_FILE="${AGENT_JIRA_QA_LOG_FILE:-$STATE_DIR/jira_qa_update.log}"
-MCP_SERVERS="${AGENT_MCP_SERVERS:-notion,atlassian-rovo-mcp-server,sonarqube}"
+BACKEND_QA_LOG_FILE="$REPO_ROOT/tmp/state/backend_for_qa.log"
+BACKEND_QA_PID_FILE="$REPO_ROOT/tmp/state/backend_for_qa.pid"
+BACKEND_QA_LAST_HEALTH_BODY=""
+MCP_SERVERS="$(mcp_servers::resolve_csv "${AGENT_MCP_SERVERS:-notion,atlassian-rovo-mcp-server,sonarqube}")"
 READ_ONLY_APPROVAL_MODE="${AGENT_GEMINI_READ_ONLY_APPROVAL_MODE:-default}"
 MUTATING_APPROVAL_MODE="${AGENT_GEMINI_MUTATING_APPROVAL_MODE:-yolo}"
 GEMINI_MODELS_CSV="${AGENT_GEMINI_MODELS:-default}"
@@ -41,8 +45,8 @@ SONAR_REVIEW_MODE="${AGENT_GEMINI_SONAR_REVIEW_MODE:-always}"
 JIRA_REVIEW_MODE="${AGENT_GEMINI_JIRA_REVIEW_MODE:-always}"
 POSTMAN_QA_MODE="${AGENT_GEMINI_POSTMAN_QA_MODE:-always}"
 QA_JIRA_MODE="${AGENT_GEMINI_QA_JIRA_MODE:-always}"
-POSTMAN_QA_MCP_SERVERS="${AGENT_GEMINI_POSTMAN_QA_MCP_SERVERS:-postman}"
-JIRA_QA_MCP_SERVERS="${AGENT_GEMINI_JIRA_QA_MCP_SERVERS:-atlassian-rovo-mcp-server}"
+POSTMAN_QA_MCP_SERVERS="$(mcp_servers::resolve_csv "${AGENT_GEMINI_POSTMAN_QA_MCP_SERVERS:-postman}")"
+JIRA_QA_MCP_SERVERS="$(mcp_servers::resolve_csv "${AGENT_GEMINI_JIRA_QA_MCP_SERVERS:-atlassian-rovo-mcp-server}")"
 POSTMAN_QA_WORKSPACE_NAME="${AGENT_POSTMAN_QA_WORKSPACE_NAME:-}"
 if [[ -z "$POSTMAN_QA_WORKSPACE_NAME" ]]; then
   POSTMAN_QA_WORKSPACE_NAME="Oris Team's Workspace"
@@ -174,6 +178,115 @@ $plan_hints
 
 Task:
 $instruction
+EOF
+}
+
+build_postman_run_only_instruction() {
+  local target_constraints="$1"
+  local max_runs="$2"
+  local ticket="$3"
+  local branch="$4"
+  local commit="$5"
+  local git_status_summary="$6"
+
+  cat <<EOF
+Run the QA step for the current backend implementation using Postman MCP tools.
+
+MANDATORY:
+- Use Postman MCP tools only.
+$target_constraints
+- Backend readiness has already been verified by shell before this step. Do not start, stop, restart, diagnose, or modify the backend.
+- This ticket has no API-layer changes in git status. Run the existing collection only.
+- Do not search for new endpoints.
+- Do not inspect repository files or local logs.
+- Do not create or edit Postman requests/tests.
+- First resolve and print the selected workspace_id and collection_id.
+- If the exact target cannot be resolved, stop immediately.
+- Run the target collection once.
+- If the collection run fails, stop and report the failed requests/assertions from the collection run only.
+- Do not perform any additional backend, shell, environment, or repository diagnostics after a failed collection run.
+- Maximum run attempts inside Postman flow: $max_runs
+- Include clear proof with workspace_id, collection_id, totals (total/passed/failed), and failed request names (if any).
+
+Context:
+- Ticket: ${ticket:-none}
+- Branch: $branch
+- Commit: $commit
+
+Git status summary:
+$git_status_summary
+
+Return exactly one of these formats:
+
+SUCCESS:
+1) Postman QA completed successfully
+2) Postman QA status: success
+3) Postman target: workspace_id=<id>; collection_id=<id>
+4) Postman results: total=<n>; passed=<n>; failed=0
+5) Postman collection proof: <concise markdown proof with totals>
+
+FAILURE:
+1) Postman QA failed
+2) Postman QA status: failed
+3) Postman target: workspace_id=<id>; collection_id=<id or unknown>
+4) Postman results: total=<n or unknown>; passed=<n or unknown>; failed=<n or unknown>
+5) Postman failure summary: <failed request names, assertions, or exact Postman/tool error>
+EOF
+}
+
+build_postman_maintenance_instruction() {
+  local target_constraints="$1"
+  local max_runs="$2"
+  local ticket="$3"
+  local branch="$4"
+  local commit="$5"
+  local git_status_summary="$6"
+  local api_change_summary="$7"
+
+  cat <<EOF
+Run the QA step for the current backend implementation using Postman MCP tools.
+
+MANDATORY:
+- Use Postman MCP tools only.
+$target_constraints
+- Backend readiness has already been verified by shell before this step. Do not start, stop, restart, diagnose, or modify the backend.
+- API-layer files changed in git status (sample up to 10):
+$api_change_summary
+- Only inspect the changed API files above when determining whether endpoint behavior changed.
+- Do not inspect unrelated repository files or local logs.
+- First resolve and print the selected workspace_id and collection_id.
+- If the exact target cannot be resolved, stop immediately.
+- Run the target collection once.
+- If the changed API files introduced endpoint changes that are missing from the collection, add only the matching requests/tests needed for those changed endpoints.
+- Re-run after collection updates only when needed.
+- Maximum run attempts inside Postman flow: $max_runs
+- If tests still fail after max attempts, stop and report failures.
+- Keep collection edits scoped to this ticket.
+- Include clear proof with workspace_id, collection_id, totals (total/passed/failed), changed endpoints covered, and failed request names (if any).
+
+Context:
+- Ticket: ${ticket:-none}
+- Branch: $branch
+- Commit: $commit
+
+Git status summary:
+$git_status_summary
+
+Return exactly one of these formats:
+
+SUCCESS:
+1) Postman QA completed successfully
+2) Postman QA status: success
+3) Postman target: workspace_id=<id>; collection_id=<id>
+4) Postman results: total=<n>; passed=<n>; failed=0
+5) Postman collection proof: <concise markdown proof with totals and changed endpoints/tests>
+
+FAILURE:
+1) Postman QA failed
+2) Postman QA status: failed
+3) Postman target: workspace_id=<id>; collection_id=<id or unknown>
+4) Postman results: total=<n or unknown>; passed=<n or unknown>; failed=<n or unknown>
+5) Postman failure summary: <failed request names, assertions, or exact Postman/tool error>
 EOF
 }
 
@@ -664,6 +777,110 @@ summarize_git_status_for_prompt() {
   printf "Git status: %s changed entries.\nSample (up to 20):\n%s" "$total" "$sample"
 }
 
+has_api_layer_changes_for_qa() {
+  git status --short 2>/dev/null | grep -Eq "src/Oris\\.Api/"
+}
+
+resolve_postman_qa_mode() {
+  if has_api_layer_changes_for_qa; then
+    echo "maintain-collection"
+  else
+    echo "run-only"
+  fi
+}
+
+summarize_api_layer_changes_for_qa() {
+  local api_changes
+
+  api_changes="$(git status --short 2>/dev/null | grep -E "src/Oris\\.Api/" | head -n 10 || true)"
+  if [[ -z "$api_changes" ]]; then
+    echo "none"
+    return 0
+  fi
+
+  printf "%s" "$api_changes"
+}
+
+append_backend_log_tail_for_qa() {
+  local label="$1"
+
+  {
+    echo "$label"
+    if [[ -s "$BACKEND_QA_LOG_FILE" ]]; then
+      echo "Backend helper log tail:"
+      tail -n 80 "$BACKEND_QA_LOG_FILE"
+    else
+      echo "Backend helper log tail: (no log data available)"
+    fi
+    echo ""
+  } >> "$POSTMAN_QA_LOG_FILE"
+}
+
+check_backend_health_for_qa() {
+  local response_file
+  local http_code=""
+
+  response_file="$(mktemp)"
+  http_code="$(curl -sS --max-time 5 -o "$response_file" -w "%{http_code}" http://localhost:5134/health 2>/dev/null || true)"
+  BACKEND_QA_LAST_HEALTH_BODY="$(cat "$response_file" 2>/dev/null || true)"
+  rm -f "$response_file"
+
+  [[ "$http_code" == "200" ]]
+}
+
+ensure_backend_ready_for_qa() {
+  local startup_output=""
+  local start_exit=0
+
+  if check_backend_health_for_qa; then
+    {
+      echo "Backend readiness: already healthy before QA."
+      echo "Health response: ${BACKEND_QA_LAST_HEALTH_BODY:-<empty>}"
+      echo ""
+    } >> "$POSTMAN_QA_LOG_FILE"
+    debug_log "Backend already healthy for QA."
+    return 0
+  fi
+
+  debug_log "Backend not healthy. Starting backend helper before Postman QA."
+  set +e
+  startup_output="$("$REPO_ROOT/scripts/start_backend_for_qa.sh" 2>&1)"
+  start_exit=$?
+  set -e
+
+  {
+    echo "Backend helper output:"
+    echo "${startup_output:-<no output>}"
+    echo ""
+  } >> "$POSTMAN_QA_LOG_FILE"
+
+  if [[ "$start_exit" -ne 0 ]]; then
+    echo "Backend helper exited with code $start_exit before QA collection execution." >> "$POSTMAN_QA_LOG_FILE"
+    append_backend_log_tail_for_qa "Backend startup failed."
+    debug_log "Backend helper failed with exit code $start_exit."
+    return 1
+  fi
+
+  if check_backend_health_for_qa; then
+    {
+      echo "Backend readiness: healthy after helper startup."
+      echo "Health response: ${BACKEND_QA_LAST_HEALTH_BODY:-<empty>}"
+      echo ""
+    } >> "$POSTMAN_QA_LOG_FILE"
+    debug_log "Backend is healthy after helper startup."
+    return 0
+  fi
+
+  {
+    echo "Backend readiness check failed after helper startup."
+    echo "Health response: ${BACKEND_QA_LAST_HEALTH_BODY:-<empty>}"
+    echo ""
+  } >> "$POSTMAN_QA_LOG_FILE"
+  append_backend_log_tail_for_qa "Backend health check failed after helper startup."
+  debug_log "Backend health check failed after helper startup."
+  return 1
+}
+
 resolve_file_mtime_epoch() {
   local file="$1"
   if stat -f %m "$file" >/dev/null 2>&1; then
@@ -827,7 +1044,11 @@ run_with_timeout() {
   local elapsed
   local next_heartbeat=30
   local timed_out=false
+  local aborted_early=false
   local cmd_exit=0
+  local early_abort_check_fn="${GEMINI_EARLY_ABORT_CHECK_FN:-}"
+  local early_abort_reason="${GEMINI_EARLY_ABORT_REASON:-Gemini attempt aborted early due to unrecoverable output.}"
+  local early_abort_exit_code="${GEMINI_EARLY_ABORT_EXIT_CODE:-86}"
 
   fifo_file=$(mktemp)
   rm -f "$fifo_file"
@@ -854,6 +1075,18 @@ run_with_timeout() {
       next_heartbeat=$((next_heartbeat + 30))
     fi
 
+    if [[ -n "$early_abort_check_fn" ]] && declare -F "$early_abort_check_fn" >/dev/null 2>&1; then
+      if "$early_abort_check_fn" "$output_file"; then
+        debug_log "$early_abort_reason"
+        aborted_early=true
+        kill_process_tree "$pid"
+        kill "$tee_pid" >/dev/null 2>&1 || true
+        sleep 1
+        kill -9 "$tee_pid" >/dev/null 2>&1 || true
+        break
+      fi
+    fi
+
     if [[ "$timeout_seconds" -gt 0 ]] && [[ "$elapsed" -ge "$timeout_seconds" ]]; then
       debug_log "Gemini attempt exceeded timeout (${timeout_seconds}s). Terminating PID $pid."
       timed_out=true
@@ -872,6 +1105,11 @@ run_with_timeout() {
   if [[ "$timed_out" == "true" ]]; then
     echo "Gemini attempt timed out after ${timeout_seconds}s." | tee -a "$output_file"
     return 124
+  fi
+
+  if [[ "$aborted_early" == "true" ]]; then
+    echo "$early_abort_reason" | tee -a "$output_file"
+    return "$early_abort_exit_code"
   fi
 
   return "$cmd_exit"
@@ -1074,6 +1312,7 @@ run_gemini_with_model_fallback() {
   local prompt_file
   local output_file
   local exit_code
+  local last_exit_code=1
   local has_model=false
   local -a models=()
 
@@ -1100,6 +1339,7 @@ run_gemini_with_model_fallback() {
     else
       exit_code=$?
     fi
+    last_exit_code="$exit_code"
     if [[ $exit_code -eq 0 ]]; then
       if is_interactive_placeholder_output "$output_file"; then
         echo "Model '$model' returned interactive placeholder output. Trying next configured model..." >&2
@@ -1163,7 +1403,7 @@ run_gemini_with_model_fallback() {
   fi
 
   rm -f "$prompt_file"
-  return 1
+  return "$last_exit_code"
 }
 
 is_proceed_request() {
@@ -1220,6 +1460,71 @@ is_transient_mcp_failure_text() {
   echo "$text" | grep -Eqi "fetch failed|connection closed|connection reset|connection refused|timed out|timeout|temporarily unavailable|try again later|service unavailable|broken pipe|econn"
 }
 
+is_postman_qa_success_text() {
+  local text="$1"
+
+  if echo "$text" | grep -Eqi "postman qa status:[[:space:]]*(failed|red)|postman qa failed|failed tests"; then
+    return 1
+  fi
+
+  echo "$text" | grep -Eqi "Postman QA completed successfully|Postman QA status:[[:space:]]*(success|green|passed)|All Postman tests passed" || return 1
+  echo "$text" | grep -Eqi "Postman target:[[:space:]]*workspace_id=[^;[:space:]]+;[[:space:]]*collection_id=[^[:space:]]+" || return 1
+  echo "$text" | grep -Eqi "Postman collection proof:" || return 1
+  echo "$text" | grep -Eqi "postman results:[^[:cntrl:]]*failed[[:space:]]*=[[:space:]]*0|failed[[:space:]]*:[[:space:]]*0"
+}
+
+is_mcp_auth_failure_text() {
+  local text="$1"
+
+  if is_postman_qa_success_text "$text"; then
+    return 1
+  fi
+
+  echo "$text" | grep -Eqi \
+    "Error executing tool [^:]+: Error: MCP tool '.*' reported an error.*(401[[:space:]]*Unauthorized|not authorized|authentication failed|auth failed|invalid api key|invalid token|forbidden|permission denied|access denied)|reported an error.*(401[[:space:]]*Unauthorized|not authorized|authentication failed|auth failed|invalid api key|invalid token|forbidden|permission denied|access denied)|401[[:space:]]*Unauthorized|HTTP[[:space:]]*40(1|3)|status:[[:space:]]*(401|403|UNAUTHENTICATED|PERMISSION_DENIED)|code:[[:space:]]*(401|403)"
+}
+
+is_postman_mcp_unrecoverable_output() {
+  local output_file="$1"
+  local tool_error_count="0"
+
+  if is_postman_qa_success_output "$output_file"; then
+    return 1
+  fi
+
+  if grep -Eqi \
+    "Error executing tool [^:]+: Error: MCP tool '.*' reported an error.*(401[[:space:]]*Unauthorized|not authorized|authentication failed|auth failed|invalid api key|invalid token|forbidden|permission denied|access denied)|reported an error.*(401[[:space:]]*Unauthorized|not authorized|authentication failed|auth failed|invalid api key|invalid token|forbidden|permission denied|access denied)|401[[:space:]]*Unauthorized|HTTP[[:space:]]*40(1|3)|status:[[:space:]]*(401|403|UNAUTHENTICATED|PERMISSION_DENIED)|code:[[:space:]]*(401|403)" "$output_file"; then
+    return 0
+  fi
+
+  if grep -Eqi "Error executing tool getAuthenticatedUser: Error: MCP tool 'getAuthenticatedUser' reported an error" "$output_file"; then
+    return 0
+  fi
+
+  tool_error_count="$(
+    grep -Ec "Error executing tool (getWorkspaces|getWorkspace|getCollection|runCollection): Error: MCP tool '.*' reported an error" "$output_file" || true
+  )"
+  [[ "${tool_error_count:-0}" -ge 2 ]]
+}
+
+is_postman_run_only_policy_violation_output() {
+  local output_file="$1"
+
+  grep -Eqi \
+    'backend startup script|backend logs|status of the \.NET installation|locate the `dotnet` binary|current `PATH`|read the startup script|README\.md|search for a `.dotnet` folder|~/.dotnet|lsof|running processes|modify the `scripts/start_backend_for_qa\.sh`|controllers|Program\.cs|repository files|local logs' \
+    "$output_file"
+}
+
+is_postman_run_only_unrecoverable_output() {
+  local output_file="$1"
+
+  if is_postman_mcp_unrecoverable_output "$output_file"; then
+    return 0
+  fi
+
+  is_postman_run_only_policy_violation_output "$output_file"
+}
+
 run_mcp_step_with_retry() {
   local step_name="$1"
   local log_file="$2"
@@ -1252,6 +1557,30 @@ run_mcp_step_with_retry() {
         echo "$snippet" >&2
       fi
       echo "Suggestion: wait for quota reset or configure a fallback model chain with AGENT_GEMINI_MODELS." >&2
+      return "$exit_code"
+    fi
+
+    if is_mcp_auth_failure_text "$snippet"; then
+      echo "$step_name failed due to MCP authentication or authorization error (attempt $attempt/$max_attempts). Not retrying." >&2
+      if [[ -n "$snippet" ]]; then
+        echo "$step_name output snippet:" >&2
+        echo "$snippet" >&2
+      fi
+      if [[ "$step_name" == *"Postman"* ]]; then
+        echo "Suggestion: verify POSTMAN_API_KEY in ~/.gemini/settings.json and confirm it can access the target workspace and collection." >&2
+      else
+        echo "Suggestion: verify MCP credentials/permissions and rerun this phase." >&2
+      fi
+      return "$exit_code"
+    fi
+
+    if [[ "$exit_code" -eq 124 ]]; then
+      echo "$step_name failed due to Gemini model timeout (attempt $attempt/$max_attempts). Not retrying." >&2
+      if [[ -n "$snippet" ]]; then
+        echo "$step_name output snippet:" >&2
+        echo "$snippet" >&2
+      fi
+      echo "Suggestion: narrow the QA prompt further or lower per-attempt scope before rerunning." >&2
       return "$exit_code"
     fi
 
@@ -1519,13 +1848,19 @@ run_postman_mcp_qa() {
   local branch
   local commit
   local git_status_summary
+  local api_change_summary
+  local postman_qa_mode
+  local approval_mode
+  local early_abort_check_fn="is_postman_mcp_unrecoverable_output"
   local target_constraints
   local max_runs
   local plan_hash
   local git_hash
+  local api_hash
   local cache_key
   local cache_file
   local used_resume=false
+  local early_abort_reason="Detected unrecoverable Postman MCP auth/config failure. Aborting this attempt early."
 
   output_file=$(mktemp)
   : > "$POSTMAN_QA_LOG_FILE"
@@ -1534,12 +1869,23 @@ run_postman_mcp_qa() {
   branch="$(git branch --show-current 2>/dev/null || echo "unknown")"
   commit="$(resolve_head_commit)"
   git_status_summary="$(truncate_text_for_prompt "$(summarize_git_status_for_prompt)" 1200)"
+  api_change_summary="$(summarize_api_layer_changes_for_qa)"
+  postman_qa_mode="$(resolve_postman_qa_mode)"
   target_constraints="$(build_postman_target_constraints "$POSTMAN_QA_WORKSPACE_NAME" "$POSTMAN_QA_COLLECTION_NAME" "$POSTMAN_QA_WORKSPACE_ID" "$POSTMAN_QA_COLLECTION_ID")"
   max_runs="$(normalize_positive_int "$POSTMAN_QA_MAX_RUNS" 2)"
   plan_hash="$(hash_file "$STATE_DIR/active_plan.md")"
   git_hash="$(hash_text "$git_status_summary")"
-  cache_key="$(hash_text "postman-qa|ticket=${ticket:-none}|commit=$commit|plan=$plan_hash|git=$git_hash")"
+  api_hash="$(hash_text "$api_change_summary")"
+  cache_key="$(hash_text "postman-qa|mode=$postman_qa_mode|ticket=${ticket:-none}|commit=$commit|plan=$plan_hash|git=$git_hash|api=$api_hash")"
   cache_file="$(aux_cache_file_for "postman_qa" "$cache_key")"
+
+  if [[ "$postman_qa_mode" == "run-only" ]]; then
+    approval_mode="$READ_ONLY_APPROVAL_MODE"
+    early_abort_check_fn="is_postman_run_only_unrecoverable_output"
+    early_abort_reason="Run-only Postman QA drifted into backend or repository diagnostics. Aborting this attempt early."
+  else
+    approval_mode="$MUTATING_APPROVAL_MODE"
+  fi
 
   {
     echo "== Postman MCP QA =="
@@ -1549,6 +1895,11 @@ run_postman_mcp_qa() {
     echo "Workspace target: $POSTMAN_QA_WORKSPACE_NAME (${POSTMAN_QA_WORKSPACE_ID:-id-not-set})"
     echo "Collection target: $POSTMAN_QA_COLLECTION_NAME (${POSTMAN_QA_COLLECTION_ID:-id-not-set})"
     echo "MCP servers: $POSTMAN_QA_MCP_SERVERS"
+    echo "Backend helper log: $BACKEND_QA_LOG_FILE"
+    echo "Backend helper PID file: $BACKEND_QA_PID_FILE"
+    echo "Postman QA mode: $postman_qa_mode"
+    echo "Approval mode: $approval_mode"
+    echo "API-layer changes in git status: $(if has_api_layer_changes_for_qa; then echo yes; else echo no; fi)"
     echo "Max QA runs: $max_runs"
     echo "Cache key: $cache_key"
     echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
@@ -1574,41 +1925,26 @@ run_postman_mcp_qa() {
     rm -f "$cache_file"
   fi
 
-  qa_prompt="$(build_qa_prompt "Run the QA step for the current backend implementation using Postman MCP tools.
+  if ! ensure_backend_ready_for_qa; then
+    rm -f "$output_file"
+    return 1
+  fi
 
-MANDATORY:
-- Use Postman MCP tools only.
-$target_constraints
-- First resolve and print the selected workspace_id and collection_id.
-- If the exact target cannot be resolved, stop immediately.
-- If IDs are not set and there are multiple name matches, stop immediately as ambiguous.
-- Run the target collection tests once.
-- If the current implementation added new endpoint(s), create matching requests in the same collection and add assertions/tests for each new endpoint.
-- Re-run after collection updates only when needed.
-- Maximum run attempts: $max_runs
-- If tests still fail after max attempts, stop and report failures (do not loop indefinitely).
-- Keep collection edits scoped to this ticket.
-- Include clear proof with workspace_id, collection_id, totals (total/passed/failed), and failed request names (if any).
+  if [[ "$postman_qa_mode" == "run-only" ]]; then
+    qa_prompt="$(build_qa_prompt \
+      "$(build_postman_run_only_instruction "$target_constraints" "$max_runs" "${ticket:-}" "$branch" "$commit" "$git_status_summary")" \
+      "${ticket:-}" "$branch" "$commit" "$git_status_summary")"
+  else
+    qa_prompt="$(build_qa_prompt \
+      "$(build_postman_maintenance_instruction "$target_constraints" "$max_runs" "${ticket:-}" "$branch" "$commit" "$git_status_summary" "$api_change_summary")" \
+      "${ticket:-}" "$branch" "$commit" "$git_status_summary")"
+  fi
 
-Context:
-- Ticket: ${ticket:-none}
-- Branch: $branch
-- Commit: $commit
-
-Git status summary:
-$git_status_summary
-
-Return exactly:
-1) Postman QA completed successfully
-2) Postman QA status: success
-3) Postman target: workspace_id=<id>; collection_id=<id>
-4) Postman results: total=<n>; passed=<n>; failed=<n>
-5) Postman collection proof: <concise markdown proof with totals and added endpoints/tests>." \
-    "${ticket:-}" "$branch" "$commit" "$git_status_summary")"
-
-  if should_attempt_aux_resume; then
+  if [[ "$postman_qa_mode" == "maintain-collection" ]] && should_attempt_aux_resume; then
     used_resume=true
-    if with_mcp_servers "$POSTMAN_QA_MCP_SERVERS" run_gemini_resume_headless "$qa_prompt" > "$output_file" 2>&1; then
+    if GEMINI_EARLY_ABORT_CHECK_FN="is_postman_mcp_unrecoverable_output" \
+      GEMINI_EARLY_ABORT_REASON="$early_abort_reason" \
+      with_mcp_servers "$POSTMAN_QA_MCP_SERVERS" run_gemini_with_model_fallback "$qa_prompt" "$approval_mode" "latest" > "$output_file" 2>&1; then
       cat "$output_file"
       if is_postman_qa_success_output "$output_file"; then
         {
@@ -1627,6 +1963,20 @@ Return exactly:
     fi
 
     cat "$output_file"
+    if is_postman_qa_success_output "$output_file"; then
+      {
+        echo "Mode: resume-latest"
+        echo "Result: success"
+        echo "Postman QA Status: success"
+        echo ""
+        cat "$output_file"
+        echo ""
+        echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
+      } >> "$POSTMAN_QA_LOG_FILE"
+      write_aux_cache "postman_qa" "$cache_key" "$output_file"
+      rm -f "$output_file"
+      return 0
+    fi
     {
       echo "Mode: resume-latest"
       echo "Result: failed, falling back to full-context run"
@@ -1645,9 +1995,11 @@ Return exactly:
   if [[ "$used_resume" == "true" ]]; then
     echo "Session resumption failed for Postman QA. Running with full context."
   else
-    echo "Running Postman QA with full context (resume skipped)."
+    echo "Running Postman QA with full context (resume skipped or disabled by mode)."
   fi
-  if with_mcp_servers "$POSTMAN_QA_MCP_SERVERS" run_gemini_headless "$qa_prompt" > "$output_file" 2>&1; then
+  if GEMINI_EARLY_ABORT_CHECK_FN="$early_abort_check_fn" \
+    GEMINI_EARLY_ABORT_REASON="$early_abort_reason" \
+    with_mcp_servers "$POSTMAN_QA_MCP_SERVERS" run_gemini_with_model_fallback "$qa_prompt" "$approval_mode" "" > "$output_file" 2>&1; then
     cat "$output_file"
     if is_postman_qa_success_output "$output_file"; then
       {
@@ -1666,6 +2018,20 @@ Return exactly:
   fi
 
   cat "$output_file"
+  if is_postman_qa_success_output "$output_file"; then
+    {
+      echo "Mode: full-context"
+      echo "Result: success"
+      echo "Postman QA Status: success"
+      echo ""
+      cat "$output_file"
+      echo ""
+      echo "Finished: $(date '+%Y-%m-%d %H:%M:%S')"
+    } >> "$POSTMAN_QA_LOG_FILE"
+    write_aux_cache "postman_qa" "$cache_key" "$output_file"
+    rm -f "$output_file"
+    return 0
+  fi
   {
     echo "Mode: full-context"
     echo "Result: failed"
@@ -2291,6 +2657,10 @@ elif [[ "$PHASE" == "qa" ]]; then
       echo "Postman workspace target: $POSTMAN_QA_WORKSPACE_NAME (${POSTMAN_QA_WORKSPACE_ID:-id-not-set})"
       echo "Postman collection target: $POSTMAN_QA_COLLECTION_NAME (${POSTMAN_QA_COLLECTION_ID:-id-not-set})"
       echo "Postman QA MCP servers: $POSTMAN_QA_MCP_SERVERS"
+      echo "Backend helper log: $BACKEND_QA_LOG_FILE"
+      echo "Backend helper PID file: $BACKEND_QA_PID_FILE"
+      echo "Postman QA mode: $(resolve_postman_qa_mode)"
+      echo "API-layer changes in git status: $(if has_api_layer_changes_for_qa; then echo yes; else echo no; fi)"
       echo "QA Jira MCP servers: $JIRA_QA_MCP_SERVERS"
       echo "Postman QA max runs: $(normalize_positive_int "$POSTMAN_QA_MAX_RUNS" 2)"
       echo "QA per-attempt timeout: ${GEMINI_ATTEMPT_TIMEOUT_SECONDS}s"
