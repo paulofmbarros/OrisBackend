@@ -8,6 +8,46 @@ namespace Oris.Domain.Tests.Entities;
 public class TrainingSessionTests
 {
     [Fact]
+    public void Constructor_ShouldSetProperties_WhenValid()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        var scheduledDate = DateTime.UtcNow.Date.AddDays(1);
+
+        // Act
+        var session = new TrainingSession(userId, scheduledDate, SessionType.Upper);
+
+        // Assert
+        session.UserId.ShouldBe(userId);
+        session.ScheduledDate.ShouldBe(scheduledDate);
+        session.Type.ShouldBe(SessionType.Upper);
+        session.IsCompleted.ShouldBeFalse();
+        session.PlannedExercises.ShouldBeEmpty();
+        session.Performances.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public void AddExercise_ShouldAddPlannedExercise_WhenValid()
+    {
+        // Arrange
+        var session = new TrainingSession(Guid.NewGuid(), DateTime.UtcNow, SessionType.Upper);
+        var exerciseId = Guid.NewGuid();
+        var initialUpdatedAt = session.UpdatedAt;
+
+        // Act
+        session.AddExercise(exerciseId, 3, 8, 12);
+
+        // Assert
+        session.PlannedExercises.Count.ShouldBe(1);
+        var plannedExercise = session.PlannedExercises.First();
+        plannedExercise.ExerciseId.ShouldBe(exerciseId);
+        plannedExercise.Sets.ShouldBe(3);
+        plannedExercise.TargetRepRange.Min.ShouldBe(8);
+        plannedExercise.TargetRepRange.Max.ShouldBe(12);
+        session.UpdatedAt.ShouldBeGreaterThanOrEqualTo(initialUpdatedAt);
+    }
+
+    [Fact]
     public void AddExercise_ShouldThrowInvalidOperationException_WhenSessionIsCompleted()
     {
         // Arrange
@@ -37,6 +77,24 @@ public class TrainingSessionTests
     }
 
     [Fact]
+    public void AddPerformance_ShouldNotAddDuplicatePerformance_WhenExerciseAlreadyExists()
+    {
+        // Arrange
+        var session = new TrainingSession(Guid.NewGuid(), DateTime.UtcNow, SessionType.Upper);
+        var exerciseId = Guid.NewGuid();
+
+        session.AddPerformance(exerciseId);
+        var updatedAtAfterFirstAdd = session.UpdatedAt;
+
+        // Act
+        session.AddPerformance(exerciseId);
+
+        // Assert
+        session.Performances.Count.ShouldBe(1);
+        session.UpdatedAt.ShouldBe(updatedAtAfterFirstAdd);
+    }
+
+    [Fact]
     public void AddPerformance_ShouldThrowInvalidOperationException_WhenSessionIsCompleted()
     {
         // Arrange
@@ -52,7 +110,17 @@ public class TrainingSessionTests
     }
 
     [Fact]
-    public void AddSetToPerformance_ShouldAddSet_WhenValid()
+    public void AddPerformance_ShouldThrowArgumentException_WhenExerciseIdIsEmpty()
+    {
+        // Arrange
+        var session = new TrainingSession(Guid.NewGuid(), DateTime.UtcNow, SessionType.Upper);
+
+        // Act & Assert
+        Should.Throw<ArgumentException>(() => session.AddPerformance(Guid.Empty));
+    }
+
+    [Fact]
+    public void AddSetToPerformance_ShouldCreatePerformanceAndAddSet_WhenPerformanceDoesNotExist()
     {
         // Arrange
         var userId = Guid.NewGuid();
@@ -66,6 +134,17 @@ public class TrainingSessionTests
         var performance = session.Performances.First(p => p.ExerciseId == exerciseId);
         performance.Sets.Count.ShouldBe(1);
         performance.Sets.First().Weight.ShouldBe(100);
+    }
+
+    [Fact]
+    public void AddSetToPerformance_ShouldThrowArgumentException_WhenExerciseIdIsEmpty()
+    {
+        // Arrange
+        var session = new TrainingSession(Guid.NewGuid(), DateTime.UtcNow, SessionType.Upper);
+
+        // Act & Assert
+        Should.Throw<ArgumentException>(() =>
+            session.AddSetToPerformance(Guid.Empty, 100, 10));
     }
 
     [Fact]

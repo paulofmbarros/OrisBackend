@@ -20,11 +20,14 @@ public class UserTests
         user.Email.ShouldBe(email);
     }
 
-    [Fact]
-    public void Constructor_ShouldThrowArgumentException_WhenEmailIsEmpty()
+    [Theory]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData(null)]
+    public void Constructor_ShouldThrowArgumentException_WhenEmailIsInvalid(string? email)
     {
         // Act & Assert
-        Should.Throw<ArgumentException>(() => new User(""))
+        Should.Throw<ArgumentException>(() => new User(email!))
             .Message.ShouldContain("empty");
     }
 }
