@@ -29,6 +29,15 @@ public class TrainingSessionRepository : ITrainingSessionRepository
             .FirstOrDefaultAsync(s => s.UserId == userId && !s.IsCompleted, cancellationToken);
     }
 
+    public async Task<TrainingSession?> GetLastCompletedSessionByUserIdAsync(Guid userId, CancellationToken cancellationToken = default)
+    {
+        return await _context.TrainingSessions
+            .Include(s => s.PlannedExercises)
+            .Where(s => s.UserId == userId && s.IsCompleted)
+            .OrderByDescending(s => s.ScheduledDate)
+            .FirstOrDefaultAsync(cancellationToken);
+    }
+
     public void Add(TrainingSession session)
     {
         _context.TrainingSessions.Add(session);

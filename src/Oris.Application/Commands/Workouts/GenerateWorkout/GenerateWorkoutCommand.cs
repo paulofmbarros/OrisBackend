@@ -5,5 +5,5 @@ using Oris.Domain.Enums;
 
 namespace Oris.Application.Commands.Workouts.GenerateWorkout;
 
-public record GenerateWorkoutCommand(Guid UserId, SessionType SessionType, DateTime ScheduledDate)
+public record GenerateWorkoutCommand(Guid UserId, DateTime ScheduledDate, SessionType SessionType = SessionType.None)
     : ICommand;
