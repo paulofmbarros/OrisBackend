@@ -197,7 +197,7 @@ public class CompleteWorkoutHandlerTests
         var sessionId = Guid.NewGuid();
         var exerciseId = Guid.NewGuid();
         var session = new TrainingSession(userId, DateTime.UtcNow, SessionType.Upper);
-        session.AddExercise(exerciseId, 3, 8, 10);
+        session.AddExercise(exerciseId, 3, 8, 10, 0);
         session.AddSetToPerformance(exerciseId, 100, 10, 8);
 
         var exercise = new Exercise("Bench Press", ExerciseClassification.Compound, MuscleGroup.Chest);

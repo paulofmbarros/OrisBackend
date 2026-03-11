@@ -8,7 +8,10 @@ public class TrainingSession : AggregateRoot
     public Guid UserId { get; private set; }
     public DateTime ScheduledDate { get; private set; }
     public SessionType Type { get; private set; }
-    public bool IsCompleted { get; private set; }
+    public DateTime? LockedAt { get; private set; }
+    public DateTime? CompletedAt { get; private set; }
+    public bool IsCompleted => CompletedAt.HasValue;
+    public bool IsLocked => LockedAt.HasValue;
 
     private readonly List<PlannedExercise> _plannedExercises = new();
     public IReadOnlyCollection<PlannedExercise> PlannedExercises => _plannedExercises.AsReadOnly();
@@ -21,13 +24,12 @@ public class TrainingSession : AggregateRoot
         UserId = userId;
         ScheduledDate = scheduledDate;
         Type = type;
-        IsCompleted = false;
     }
 
-    public void AddExercise(Guid exerciseId, int sets, int minReps, int maxReps)
+    public void AddExercise(Guid exerciseId, int sets, int minReps, int maxReps, int order, double? suggestedLoad = null, int? restTimeSeconds = null)
     {
-        if (IsCompleted)
-            throw new InvalidOperationException("Cannot add exercises to a completed session.");
+        if (IsLocked)
+            throw new InvalidOperationException("Cannot add exercises to a locked session.");
 
         if (exerciseId == Guid.Empty)
             throw new ArgumentException("Exercise ID cannot be empty.", nameof(exerciseId));
@@ -35,7 +37,7 @@ public class TrainingSession : AggregateRoot
         if (sets is <= 0 or > 20)
             throw new ArgumentException("Number of sets must be between 1 and 20.", nameof(sets));
 
-        var plannedExercise = new PlannedExercise(Id, exerciseId, sets, new(minReps, maxReps));
+        var plannedExercise = new PlannedExercise(Id, exerciseId, sets, new(minReps, maxReps), order, suggestedLoad, restTimeSeconds);
         _plannedExercises.Add(plannedExercise);
         UpdatedAt = DateTime.UtcNow;
     }
@@ -61,6 +63,11 @@ public class TrainingSession : AggregateRoot
         if (IsCompleted)
             throw new InvalidOperationException("Cannot add sets to a completed session.");
 
+        if (!IsLocked)
+        {
+            LockedAt = DateTime.UtcNow;
+        }
+
         if (exerciseId == Guid.Empty)
             throw new ArgumentException("Exercise ID cannot be empty.", nameof(exerciseId));
 
@@ -83,7 +90,12 @@ public class TrainingSession : AggregateRoot
         if (IsCompleted)
             return;
 
-        IsCompleted = true;
+        if (!IsLocked)
+        {
+            LockedAt = DateTime.UtcNow;
+        }
+
+        CompletedAt = DateTime.UtcNow;
         UpdatedAt = DateTime.UtcNow;
     }
 

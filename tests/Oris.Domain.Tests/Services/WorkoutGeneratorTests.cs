@@ -159,7 +159,7 @@ public class WorkoutGeneratorTests
         var recentExercise = CreateExercise("Bench Press", ExerciseClassification.Compound, MuscleGroup.Chest, MovementPattern.HorizontalPush, Equipment.Barbell, Equipment.Bench);
         var alternativeExercise = CreateExercise("Cable Fly", ExerciseClassification.Accessory, MuscleGroup.Chest, MovementPattern.Isolation, Equipment.Cable);
         var lastSession = new TrainingSession(user.Id, DateTime.UtcNow.AddDays(-2), SessionType.Upper);
-        lastSession.AddExercise(recentExercise.Id, 3, 8, 12);
+        lastSession.AddExercise(recentExercise.Id, 3, 8, 12, 0);
 
         var session = _sut.GenerateWorkout(
             user,
@@ -179,7 +179,7 @@ public class WorkoutGeneratorTests
         var differentPatternExercise = CreateExercise("Hex Press", ExerciseClassification.Compound, MuscleGroup.Chest, MovementPattern.Isolation, Equipment.Dumbbell);
         var lastSessionExercise = CreateExercise("Triceps Dip", ExerciseClassification.Compound, MuscleGroup.Triceps, MovementPattern.HorizontalPush, Equipment.Bodyweight);
         var lastSession = new TrainingSession(user.Id, DateTime.UtcNow.AddDays(-2), SessionType.Upper);
-        lastSession.AddExercise(lastSessionExercise.Id, 3, 8, 12);
+        lastSession.AddExercise(lastSessionExercise.Id, 3, 8, 12, 0);
 
         var session = _sut.GenerateWorkout(
             user,
@@ -242,7 +242,7 @@ public class WorkoutGeneratorTests
         var user = CreateUser();
         var exercise = CreateExercise("Bench Press", ExerciseClassification.Compound, MuscleGroup.Chest, MovementPattern.HorizontalPush);
         var lastSession = new TrainingSession(user.Id, DateTime.UtcNow.AddDays(-1), SessionType.Upper);
-        lastSession.AddExercise(exercise.Id, 3, 8, 12);
+        lastSession.AddExercise(exercise.Id, 3, 8, 12, 0);
 
         var score = CalculateScore(exercise, user, lastSession, new List<Exercise> { exercise });
 

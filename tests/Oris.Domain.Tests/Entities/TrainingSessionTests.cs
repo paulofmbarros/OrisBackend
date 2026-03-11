@@ -35,7 +35,7 @@ public class TrainingSessionTests
         var initialUpdatedAt = session.UpdatedAt;
 
         // Act
-        session.AddExercise(exerciseId, 3, 8, 12);
+        session.AddExercise(exerciseId, 3, 8, 12, 0, 100, 90);
 
         // Assert
         session.PlannedExercises.Count.ShouldBe(1);
@@ -44,21 +44,24 @@ public class TrainingSessionTests
         plannedExercise.Sets.ShouldBe(3);
         plannedExercise.TargetRepRange.Min.ShouldBe(8);
         plannedExercise.TargetRepRange.Max.ShouldBe(12);
+        plannedExercise.Order.ShouldBe(0);
+        plannedExercise.SuggestedLoad.ShouldBe(100);
+        plannedExercise.RestTimeSeconds.ShouldBe(90);
         session.UpdatedAt.ShouldBeGreaterThanOrEqualTo(initialUpdatedAt);
     }
 
     [Fact]
-    public void AddExercise_ShouldThrowInvalidOperationException_WhenSessionIsCompleted()
+    public void AddExercise_ShouldThrowInvalidOperationException_WhenSessionIsLocked()
     {
         // Arrange
         var userId = Guid.NewGuid();
         var session = new TrainingSession(userId, DateTime.UtcNow, SessionType.Upper);
-        session.Complete();
+        session.AddSetToPerformance(Guid.NewGuid(), 100, 10); // Adding a set locks the session
 
         // Act & Assert
         Should.Throw<InvalidOperationException>(() =>
-            session.AddExercise(Guid.NewGuid(), 3, 8, 12))
-            .Message.ShouldContain("completed");
+            session.AddExercise(Guid.NewGuid(), 3, 8, 12, 1))
+            .Message.ShouldContain("locked");
     }
 
     [Fact]
@@ -137,6 +140,21 @@ public class TrainingSessionTests
     }
 
     [Fact]
+    public void AddSetToPerformance_ShouldLockSession_WhenFirstSetIsAdded()
+    {
+        // Arrange
+        var session = new TrainingSession(Guid.NewGuid(), DateTime.UtcNow, SessionType.Upper);
+        session.IsLocked.ShouldBeFalse();
+
+        // Act
+        session.AddSetToPerformance(Guid.NewGuid(), 100, 10);
+
+        // Assert
+        session.IsLocked.ShouldBeTrue();
+        session.LockedAt.ShouldNotBeNull();
+    }
+
+    [Fact]
     public void AddSetToPerformance_ShouldThrowArgumentException_WhenExerciseIdIsEmpty()
     {
         // Arrange
@@ -162,17 +180,19 @@ public class TrainingSessionTests
     }
 
     [Fact]
-    public void Complete_ShouldSetIsCompletedToTrue()
+    public void Complete_ShouldSetCompletedAtAndLockedAt()
     {
         // Arrange
-        var userId = Guid.NewGuid();
-        var session = new TrainingSession(userId, DateTime.UtcNow, SessionType.Upper);
+        var session = new TrainingSession(Guid.NewGuid(), DateTime.UtcNow, SessionType.Upper);
 
         // Act
         session.Complete();
 
         // Assert
         session.IsCompleted.ShouldBeTrue();
+        session.CompletedAt.ShouldNotBeNull();
+        session.IsLocked.ShouldBeTrue();
+        session.LockedAt.ShouldNotBeNull();
     }
 
     [Fact]
@@ -182,8 +202,8 @@ public class TrainingSessionTests
         var session = new TrainingSession(Guid.NewGuid(), DateTime.UtcNow, SessionType.Upper);
 
         // Act & Assert
-        Should.Throw<ArgumentException>(() => session.AddExercise(Guid.NewGuid(), 0, 8, 12));
-        Should.Throw<ArgumentException>(() => session.AddExercise(Guid.NewGuid(), 21, 8, 12));
+        Should.Throw<ArgumentException>(() => session.AddExercise(Guid.NewGuid(), 0, 8, 12, 0));
+        Should.Throw<ArgumentException>(() => session.AddExercise(Guid.NewGuid(), 21, 8, 12, 0));
     }
 
     [Fact]
@@ -193,7 +213,7 @@ public class TrainingSessionTests
         var session = new TrainingSession(Guid.NewGuid(), DateTime.UtcNow, SessionType.Upper);
 
         // Act & Assert
-        Should.Throw<ArgumentException>(() => session.AddExercise(Guid.Empty, 3, 8, 12));
+        Should.Throw<ArgumentException>(() => session.AddExercise(Guid.Empty, 3, 8, 12, 0));
     }
 
     [Fact]

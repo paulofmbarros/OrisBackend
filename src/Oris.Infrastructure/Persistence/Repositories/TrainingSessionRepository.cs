@@ -26,14 +26,21 @@ public class TrainingSessionRepository : ITrainingSessionRepository
         return await _context.TrainingSessions
             .Include(s => s.PlannedExercises)
             .Include(s => s.Performances)
-            .FirstOrDefaultAsync(s => s.UserId == userId && !s.IsCompleted, cancellationToken);
+            .FirstOrDefaultAsync(s => s.UserId == userId && s.CompletedAt == null, cancellationToken);
+    }
+
+    public async Task<bool> HasActiveSessionForDateAsync(Guid userId, DateTime date, CancellationToken cancellationToken = default)
+    {
+        var dateOnly = date.Date;
+        return await _context.TrainingSessions
+            .AnyAsync(s => s.UserId == userId && s.ScheduledDate.Date == dateOnly && s.CompletedAt == null, cancellationToken);
     }
 
     public async Task<TrainingSession?> GetLastCompletedSessionByUserIdAsync(Guid userId, CancellationToken cancellationToken = default)
     {
         return await _context.TrainingSessions
             .Include(s => s.PlannedExercises)
-            .Where(s => s.UserId == userId && s.IsCompleted)
+            .Where(s => s.UserId == userId && s.CompletedAt != null)
             .OrderByDescending(s => s.ScheduledDate)
             .FirstOrDefaultAsync(cancellationToken);
     }

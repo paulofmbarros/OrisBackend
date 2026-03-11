@@ -5,7 +5,7 @@ namespace Oris.Domain.Services;
 
 public class WorkoutGenerator : IWorkoutGenerator
 {
-    private sealed record SlotTemplate(MuscleGroup MuscleGroup, ExerciseClassification Priority, int Sets, int MinReps, int MaxReps, int EstimatedMinutes);
+    private sealed record SlotTemplate(MuscleGroup MuscleGroup, ExerciseClassification Priority, int Sets, int MinReps, int MaxReps, int EstimatedMinutes, int RestTimeSeconds);
 
     public TrainingSession GenerateWorkout(
         User user,
@@ -26,6 +26,7 @@ public class WorkoutGenerator : IWorkoutGenerator
         var templates = GetSlotTemplates(type);
         var selectedExerciseIds = new HashSet<Guid>();
         var totalEstimatedTime = 0;
+        var order = 0;
 
         // 2. Filter exercises by equipment availability
         var equipmentFilteredExercises = availableExercises
@@ -59,7 +60,16 @@ public class WorkoutGenerator : IWorkoutGenerator
                 continue;
             }
 
-            session.AddExercise(bestMatch.Id, template.Sets, template.MinReps, template.MaxReps);
+            // 5. Calculate Suggested Load
+            double? suggestedLoad = null;
+            var progression = progressionStates?.FirstOrDefault(p => p.ExerciseId == bestMatch.Id);
+            if (progression != null)
+            {
+                // Simple suggested load: last weight used
+                suggestedLoad = progression.LastWeight;
+            }
+
+            session.AddExercise(bestMatch.Id, template.Sets, template.MinReps, template.MaxReps, order++, suggestedLoad, template.RestTimeSeconds);
             selectedExerciseIds.Add(bestMatch.Id);
             totalEstimatedTime += template.EstimatedMinutes;
         }
@@ -129,22 +139,22 @@ public class WorkoutGenerator : IWorkoutGenerator
         {
             return new List<SlotTemplate>
             {
-                new(MuscleGroup.Chest, ExerciseClassification.Compound, 3, 6, 10, 15),
-                new(MuscleGroup.Back, ExerciseClassification.Compound, 3, 6, 10, 15),
-                new(MuscleGroup.Shoulders, ExerciseClassification.Accessory, 3, 10, 15, 10),
-                new(MuscleGroup.Chest, ExerciseClassification.Accessory, 3, 10, 15, 10),
-                new(MuscleGroup.Back, ExerciseClassification.Accessory, 3, 10, 15, 10)
+                new(MuscleGroup.Chest, ExerciseClassification.Compound, 3, 6, 10, 15, 180),
+                new(MuscleGroup.Back, ExerciseClassification.Compound, 3, 6, 10, 15, 180),
+                new(MuscleGroup.Shoulders, ExerciseClassification.Accessory, 3, 10, 15, 10, 90),
+                new(MuscleGroup.Chest, ExerciseClassification.Accessory, 3, 10, 15, 10, 90),
+                new(MuscleGroup.Back, ExerciseClassification.Accessory, 3, 10, 15, 10, 90)
             };
         }
         else // Lower
         {
             return new List<SlotTemplate>
             {
-                new(MuscleGroup.Quads, ExerciseClassification.Compound, 3, 6, 10, 15),
-                new(MuscleGroup.Hamstrings, ExerciseClassification.Compound, 3, 6, 10, 15),
-                new(MuscleGroup.Glutes, ExerciseClassification.Accessory, 3, 10, 15, 10),
-                new(MuscleGroup.Quads, ExerciseClassification.Accessory, 3, 10, 15, 10),
-                new(MuscleGroup.Hamstrings, ExerciseClassification.Accessory, 3, 10, 15, 10)
+                new(MuscleGroup.Quads, ExerciseClassification.Compound, 3, 6, 10, 15, 180),
+                new(MuscleGroup.Hamstrings, ExerciseClassification.Compound, 3, 6, 10, 15, 180),
+                new(MuscleGroup.Glutes, ExerciseClassification.Accessory, 3, 10, 15, 10, 90),
+                new(MuscleGroup.Quads, ExerciseClassification.Accessory, 3, 10, 15, 10, 90),
+                new(MuscleGroup.Hamstrings, ExerciseClassification.Accessory, 3, 10, 15, 10, 90)
             };
         }
     }

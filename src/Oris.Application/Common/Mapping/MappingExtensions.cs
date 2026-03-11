@@ -15,6 +15,8 @@ public static class MappingExtensions
             session.ScheduledDate,
             session.Type.ToString(),
             session.IsCompleted,
+            session.LockedAt,
+            session.CompletedAt,
             plannedExercises,
             performances);
     }
@@ -27,7 +29,10 @@ public static class MappingExtensions
             exerciseNames.TryGetValue(pe.ExerciseId, out var name) ? name : "Unknown Exercise",
             pe.Sets,
             pe.TargetRepRange.Min,
-            pe.TargetRepRange.Max);
+            pe.TargetRepRange.Max,
+            pe.Order,
+            pe.SuggestedLoad,
+            pe.RestTimeSeconds);
     }
 
     public static ExercisePerformanceDto ToDto(this ExercisePerformance p, IDictionary<Guid, string> exerciseNames)
