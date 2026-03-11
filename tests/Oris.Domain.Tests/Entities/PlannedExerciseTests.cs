@@ -26,12 +26,14 @@ public class PlannedExerciseTests
         planned.TargetRepRange.ShouldBe(repRange);
     }
 
-    [Fact]
-    public void Constructor_ShouldThrowArgumentException_WhenSetsIsZeroOrNegative()
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Constructor_ShouldThrowArgumentException_WhenSetsIsZeroOrNegative(int sets)
     {
         // Act & Assert
         Should.Throw<ArgumentException>(() =>
-            new PlannedExercise(Guid.NewGuid(), Guid.NewGuid(), 0, new RepetitionRange(8, 12)));
+            new PlannedExercise(Guid.NewGuid(), Guid.NewGuid(), sets, new RepetitionRange(8, 12)));
     }
 
     [Fact]

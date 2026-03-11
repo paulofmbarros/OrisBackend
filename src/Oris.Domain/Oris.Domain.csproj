@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Oris.Domain.Tests" />
+    <InternalsVisibleTo Include="Oris.Infrastructure.Tests" />
   </ItemGroup>
 
 </Project>

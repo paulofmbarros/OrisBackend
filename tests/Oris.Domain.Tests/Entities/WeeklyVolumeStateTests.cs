@@ -8,31 +8,35 @@ namespace Oris.Domain.Tests.Entities;
 public class WeeklyVolumeStateTests
 {
     [Fact]
-    public void AddSets_ShouldIncrementCurrentSets()
+    public void AddSets_ShouldIncrementCurrentSets_AndUpdateUpdatedAt()
     {
         // Arrange
         var userId = Guid.NewGuid();
         var state = new WeeklyVolumeState(userId, MuscleGroup.Chest, 10);
+        var initialUpdatedAt = state.UpdatedAt;
 
         // Act
         state.AddSets(3);
 
         // Assert
         state.CurrentSets.ShouldBe(3);
+        state.UpdatedAt.ShouldBeGreaterThanOrEqualTo(initialUpdatedAt);
     }
 
     [Fact]
-    public void Reset_ShouldSetCurrentSetsToZero()
+    public void Reset_ShouldSetCurrentSetsToZero_AndUpdateUpdatedAt()
     {
         // Arrange
         var state = new WeeklyVolumeState(Guid.NewGuid(), MuscleGroup.Back, 12);
         state.AddSets(5);
+        var updatedAtBeforeReset = state.UpdatedAt;
 
         // Act
         state.Reset();
 
         // Assert
         state.CurrentSets.ShouldBe(0);
+        state.UpdatedAt.ShouldBeGreaterThanOrEqualTo(updatedAtBeforeReset);
     }
 
     [Fact]

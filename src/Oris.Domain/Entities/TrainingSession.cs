@@ -29,6 +29,12 @@ public class TrainingSession : AggregateRoot
         if (IsCompleted)
             throw new InvalidOperationException("Cannot add exercises to a completed session.");
 
+        if (exerciseId == Guid.Empty)
+            throw new ArgumentException("Exercise ID cannot be empty.", nameof(exerciseId));
+
+        if (sets is <= 0 or > 20)
+            throw new ArgumentException("Number of sets must be between 1 and 20.", nameof(sets));
+
         var plannedExercise = new PlannedExercise(Id, exerciseId, sets, new(minReps, maxReps));
         _plannedExercises.Add(plannedExercise);
         UpdatedAt = DateTime.UtcNow;
@@ -38,6 +44,9 @@ public class TrainingSession : AggregateRoot
     {
         if (IsCompleted)
             throw new InvalidOperationException("Cannot add performances to a completed session.");
+
+        if (exerciseId == Guid.Empty)
+            throw new ArgumentException("Exercise ID cannot be empty.", nameof(exerciseId));
 
         if (_performances.Any(p => p.ExerciseId == exerciseId))
             return;
@@ -52,12 +61,18 @@ public class TrainingSession : AggregateRoot
         if (IsCompleted)
             throw new InvalidOperationException("Cannot add sets to a completed session.");
 
+        if (exerciseId == Guid.Empty)
+            throw new ArgumentException("Exercise ID cannot be empty.", nameof(exerciseId));
+
         var performance = _performances.FirstOrDefault(p => p.ExerciseId == exerciseId);
         if (performance == null)
         {
             performance = new ExercisePerformance(Id, exerciseId);
             _performances.Add(performance);
         }
+
+        if (performance.Sets.Count >= 20)
+            throw new InvalidOperationException("Maximum number of sets (20) reached for this exercise.");
 
         performance.AddSet(weight, reps, rpe);
         UpdatedAt = DateTime.UtcNow;

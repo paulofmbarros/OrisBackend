@@ -2,6 +2,7 @@
 
 mcp_servers::normalize_name() {
   echo "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]'
+  return 0
 }
 
 mcp_servers::canonical_name() {
@@ -16,6 +17,7 @@ mcp_servers::canonical_name() {
       echo "$normalized"
       ;;
   esac
+  return 0
 }
 
 mcp_servers::aliases_for_name() {
@@ -30,6 +32,7 @@ mcp_servers::aliases_for_name() {
       printf "%s\n" "$canonical"
       ;;
   esac
+  return 0
 }
 
 mcp_servers::resolve_csv() {
@@ -50,11 +53,14 @@ mcp_servers::resolve_csv() {
   done
 
   echo "$resolved"
+  return 0
 }
 
 mcp_servers::escape_regex() {
   printf '%s' "${1:-}" | sed -e 's/[][(){}.^$?*+|\/\\]/\\&/g'
+  return 0
 }
+
 
 mcp_servers::line_matches_name() {
   local line="$1"

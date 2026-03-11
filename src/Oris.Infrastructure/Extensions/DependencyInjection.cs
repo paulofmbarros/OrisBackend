@@ -7,8 +7,10 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.IdentityModel.Tokens;
 using Oris.Application.Abstractions;
+using Oris.Domain.Services;
 using Oris.Infrastructure.Identity;
 using Oris.Infrastructure.Persistence;
+using Oris.Infrastructure.Persistence.Repositories;
 
 namespace Oris.Infrastructure.Extensions;
 
@@ -56,6 +58,18 @@ public static class DependencyInjection
 
         services.AddHttpContextAccessor();
         services.AddScoped<ICurrentUserService, CurrentUserService>();
+
+        // Repositories
+        services.AddScoped<IUnitOfWork, UnitOfWork>();
+        services.AddScoped<IUserRepository, UserRepository>();
+        services.AddScoped<ITrainingSessionRepository, TrainingSessionRepository>();
+        services.AddScoped<IExerciseRepository, ExerciseRepository>();
+        services.AddScoped<IVolumeRepository, VolumeRepository>();
+        services.AddScoped<IProgressionRepository, ProgressionRepository>();
+
+        // Services
+        services.AddScoped<IWorkoutGenerator, WorkoutGenerator>();
+        services.AddScoped<IProgressionEngine, ProgressionEngine>();
 
         return services;
     }
