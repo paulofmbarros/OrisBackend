@@ -12,6 +12,8 @@ public class GenerateWorkoutHandler : ICommandHandler<GenerateWorkoutCommand, Re
     private readonly IUserRepository _userRepository;
     private readonly ITrainingSessionRepository _sessionRepository;
     private readonly IExerciseRepository _exerciseRepository;
+    private readonly IProgressionRepository _progressionRepository;
+    private readonly IVolumeRepository _volumeRepository;
     private readonly IWorkoutGenerator _workoutGenerator;
     private readonly IUnitOfWork _unitOfWork;
 
@@ -19,12 +21,16 @@ public class GenerateWorkoutHandler : ICommandHandler<GenerateWorkoutCommand, Re
         IUserRepository userRepository,
         ITrainingSessionRepository sessionRepository,
         IExerciseRepository exerciseRepository,
+        IProgressionRepository progressionRepository,
+        IVolumeRepository volumeRepository,
         IWorkoutGenerator workoutGenerator,
         IUnitOfWork unitOfWork)
     {
         _userRepository = userRepository;
         _sessionRepository = sessionRepository;
         _exerciseRepository = exerciseRepository;
+        _progressionRepository = progressionRepository;
+        _volumeRepository = volumeRepository;
         _workoutGenerator = workoutGenerator;
         _unitOfWork = unitOfWork;
     }
@@ -45,7 +51,20 @@ public class GenerateWorkoutHandler : ICommandHandler<GenerateWorkoutCommand, Re
         }
 
         var availableExercises = await _exerciseRepository.GetAllAsync(cancellationToken);
-        var session = _workoutGenerator.GenerateWorkout(user, request.SessionType, request.ScheduledDate, availableExercises);
+
+        var lastSession = await _sessionRepository.GetLastCompletedSessionByUserIdAsync(userId, cancellationToken);
+        var progressionStates = await _progressionRepository.GetByUserIdAsync(userId, cancellationToken);
+        var volumeStates = await _volumeRepository.GetByUserIdAsync(userId, cancellationToken);
+
+        var session = _workoutGenerator.GenerateWorkout(
+            user,
+            request.SessionType,
+            request.ScheduledDate,
+            availableExercises,
+            lastSession,
+            progressionStates,
+            volumeStates);
+
         _sessionRepository.Add(session);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 

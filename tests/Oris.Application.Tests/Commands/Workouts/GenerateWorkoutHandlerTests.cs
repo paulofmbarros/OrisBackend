@@ -5,6 +5,7 @@ using Oris.Domain.Entities;
 using Oris.Domain.Enums;
 using Oris.Domain.Services;
 using Shouldly;
+using Xunit;
 
 namespace Oris.Application.Tests.Commands.Workouts;
 
@@ -13,6 +14,8 @@ public class GenerateWorkoutHandlerTests
     private readonly Mock<IUserRepository> _userRepositoryMock;
     private readonly Mock<ITrainingSessionRepository> _sessionRepositoryMock;
     private readonly Mock<IExerciseRepository> _exerciseRepositoryMock;
+    private readonly Mock<IProgressionRepository> _progressionRepositoryMock;
+    private readonly Mock<IVolumeRepository> _volumeRepositoryMock;
     private readonly Mock<IWorkoutGenerator> _workoutGeneratorMock;
     private readonly Mock<IUnitOfWork> _unitOfWorkMock;
     private readonly GenerateWorkoutHandler _handler;
@@ -22,12 +25,16 @@ public class GenerateWorkoutHandlerTests
         _userRepositoryMock = new Mock<IUserRepository>();
         _sessionRepositoryMock = new Mock<ITrainingSessionRepository>();
         _exerciseRepositoryMock = new Mock<IExerciseRepository>();
+        _progressionRepositoryMock = new Mock<IProgressionRepository>();
+        _volumeRepositoryMock = new Mock<IVolumeRepository>();
         _workoutGeneratorMock = new Mock<IWorkoutGenerator>();
         _unitOfWorkMock = new Mock<IUnitOfWork>();
         _handler = new GenerateWorkoutHandler(
             _userRepositoryMock.Object,
             _sessionRepositoryMock.Object,
             _exerciseRepositoryMock.Object,
+            _progressionRepositoryMock.Object,
+            _volumeRepositoryMock.Object,
             _workoutGeneratorMock.Object,
             _unitOfWorkMock.Object);
     }
@@ -38,7 +45,7 @@ public class GenerateWorkoutHandlerTests
         // Arrange
         var userId = Guid.NewGuid();
         var user = new User("test@test.com");
-        var command = new GenerateWorkoutCommand(userId, SessionType.Upper, DateTime.UtcNow);
+        var command = new GenerateWorkoutCommand(userId, DateTime.UtcNow, SessionType.Upper);
         var session = new TrainingSession(userId, DateTime.UtcNow, SessionType.Upper);
         var exercises = new List<Exercise>();
 
@@ -51,7 +58,16 @@ public class GenerateWorkoutHandlerTests
         _exerciseRepositoryMock.Setup(x => x.GetAllAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync(exercises);
 
-        _workoutGeneratorMock.Setup(x => x.GenerateWorkout(user, command.SessionType, command.ScheduledDate, exercises))
+        _sessionRepositoryMock.Setup(x => x.GetLastCompletedSessionByUserIdAsync(userId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((TrainingSession?)null);
+
+        _progressionRepositoryMock.Setup(x => x.GetByUserIdAsync(userId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ProgressionState>());
+
+        _volumeRepositoryMock.Setup(x => x.GetByUserIdAsync(userId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<WeeklyVolumeState>());
+
+        _workoutGeneratorMock.Setup(x => x.GenerateWorkout(user, command.SessionType, command.ScheduledDate, exercises, null, It.IsAny<IEnumerable<ProgressionState>>(), It.IsAny<IEnumerable<WeeklyVolumeState>>()))
             .Returns(session);
 
         // Act
@@ -69,7 +85,7 @@ public class GenerateWorkoutHandlerTests
     {
         // Arrange
         var userId = Guid.NewGuid();
-        var command = new GenerateWorkoutCommand(userId, SessionType.Upper, DateTime.UtcNow);
+        var command = new GenerateWorkoutCommand(userId, DateTime.UtcNow, SessionType.Upper);
 
         _userRepositoryMock.Setup(x => x.GetByIdAsync(userId, It.IsAny<CancellationToken>()))
             .ReturnsAsync((User?)null);
@@ -88,7 +104,7 @@ public class GenerateWorkoutHandlerTests
         // Arrange
         var userId = Guid.NewGuid();
         var user = new User("test@test.com");
-        var command = new GenerateWorkoutCommand(userId, SessionType.Upper, DateTime.UtcNow);
+        var command = new GenerateWorkoutCommand(userId, DateTime.UtcNow, SessionType.Upper);
         var activeSession = new TrainingSession(userId, DateTime.UtcNow, SessionType.Upper);
 
         _userRepositoryMock.Setup(x => x.GetByIdAsync(userId, It.IsAny<CancellationToken>()))

@@ -20,6 +20,13 @@ public class VolumeRepository : IVolumeRepository
             .FirstOrDefaultAsync(v => v.UserId == userId && v.MuscleGroup == muscleGroup, cancellationToken);
     }
 
+    public async Task<List<WeeklyVolumeState>> GetByUserIdAsync(Guid userId, CancellationToken cancellationToken = default)
+    {
+        return await _context.WeeklyVolumeStates
+            .Where(v => v.UserId == userId)
+            .ToListAsync(cancellationToken);
+    }
+
     public void Add(WeeklyVolumeState state)
     {
         _context.WeeklyVolumeStates.Add(state);
