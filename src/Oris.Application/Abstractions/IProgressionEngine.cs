@@ -16,5 +16,6 @@ public interface IProgressionEngine
     /// <returns>A <see cref="Result{T}"/> containing the updated <see cref="ProgressionState"/>.</returns>
     Result<ProgressionState> CalculateNextState(
         ProgressionState currentState,
-        ExercisePerformance performance);
+        ExercisePerformance performance,
+        int targetReps);
 }

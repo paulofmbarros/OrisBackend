@@ -1,4 +1,5 @@
 using Oris.Application.Abstractions;
+using Oris.Application.Common.Mapping;
 using Oris.Application.Common.Models;
 using Oris.Application.Dtos;
 using Oris.Domain.Entities;
@@ -46,46 +47,13 @@ public class RecordSetHandler : ICommandHandler<RecordSetCommand, Result<Trainin
         _sessionRepository.Update(session);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-        var dto = await MapToDtoAsync(session, cancellationToken);
-        return Result<TrainingSessionDto>.Success(dto);
-    }
+        var exerciseIds = session.PlannedExercises.Select(pe => pe.ExerciseId)
+            .Union(session.Performances.Select(p => p.ExerciseId))
+            .Distinct();
 
-    private async Task<TrainingSessionDto> MapToDtoAsync(TrainingSession session, CancellationToken cancellationToken)
-    {
-        var plannedExercises = new List<PlannedExerciseDto>();
-        foreach (var pe in session.PlannedExercises)
-        {
-            var exercise = await _exerciseRepository.GetByIdAsync(pe.ExerciseId, cancellationToken);
-            plannedExercises.Add(new PlannedExerciseDto(
-                pe.Id,
-                pe.ExerciseId,
-                exercise?.Name ?? "Unknown Exercise",
-                pe.Sets,
-                pe.TargetRepRange.Min,
-                pe.TargetRepRange.Max));
-        }
+        var exercises = await _exerciseRepository.GetByIdsAsync(exerciseIds, cancellationToken);
+        var exerciseMap = exercises.ToDictionary(e => e.Id, e => e.Name);
 
-        var performances = new List<ExercisePerformanceDto>();
-        foreach (var p in session.Performances)
-        {
-            var exercise = await _exerciseRepository.GetByIdAsync(p.ExerciseId, cancellationToken);
-            performances.Add(new ExercisePerformanceDto(
-                p.Id,
-                p.ExerciseId,
-                exercise?.Name ?? "Unknown Exercise",
-                p.Sets.Select(s => new SetPerformanceDto(
-                    Guid.NewGuid(),
-                    s.Weight,
-                    s.Reps,
-                    s.Rpe)).ToList()));
-        }
-
-        return new TrainingSessionDto(
-            session.Id,
-            session.ScheduledDate,
-            session.Type.ToString(),
-            session.IsCompleted,
-            plannedExercises,
-            performances);
+        return Result<TrainingSessionDto>.Success(session.ToDto(exerciseMap));
     }
 }

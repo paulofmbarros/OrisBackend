@@ -36,6 +36,9 @@ public class RecordSetHandlerTests
         _sessionRepositoryMock.Setup(x => x.GetByIdAsync(sessionId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(session);
 
+        _exerciseRepositoryMock.Setup(x => x.GetByIdsAsync(It.IsAny<IEnumerable<Guid>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<Exercise>());
+
         var command = new RecordSetCommand(sessionId, exerciseId, 100, 10, 8);
 
         // Act

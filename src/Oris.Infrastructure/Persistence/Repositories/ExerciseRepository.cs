@@ -19,6 +19,13 @@ public class ExerciseRepository : IExerciseRepository
         return await _context.Exercises.FirstOrDefaultAsync(e => e.Id == id, cancellationToken);
     }
 
+    public async Task<List<Exercise>> GetByIdsAsync(IEnumerable<Guid> ids, CancellationToken cancellationToken = default)
+    {
+        return await _context.Exercises
+            .Where(e => ids.Contains(e.Id))
+            .ToListAsync(cancellationToken);
+    }
+
     public async Task<List<Exercise>> GetByMuscleGroupAsync(MuscleGroup muscleGroup, CancellationToken cancellationToken = default)
     {
         return await _context.Exercises

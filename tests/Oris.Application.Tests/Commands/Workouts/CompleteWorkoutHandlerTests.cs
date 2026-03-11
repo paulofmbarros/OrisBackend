@@ -61,7 +61,7 @@ public class CompleteWorkoutHandlerTests
         _progressionRepositoryMock.Setup(x => x.GetByUserIdAndExerciseIdAsync(userId, exerciseId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(progressionState);
 
-        _progressionEngineMock.Setup(x => x.CalculateNextState(progressionState, It.IsAny<ExercisePerformance>()))
+        _progressionEngineMock.Setup(x => x.CalculateNextState(progressionState, It.IsAny<ExercisePerformance>(), It.IsAny<int>()))
             .Returns(Result<ProgressionState>.Success(progressionState));
 
         var command = new CompleteWorkoutCommand(sessionId);

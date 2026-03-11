@@ -97,14 +97,52 @@ public class TrainingSessionTests
     }
 
     [Fact]
-    public void Constructor_ShouldInitializeWithIsCompletedFalse()
+    public void AddExercise_ShouldThrowArgumentException_WhenSetsIsInvalid()
     {
         // Arrange
-        var userId = Guid.NewGuid();
-        var session = new TrainingSession(userId, DateTime.UtcNow, SessionType.Upper);
+        var session = new TrainingSession(Guid.NewGuid(), DateTime.UtcNow, SessionType.Upper);
 
-        // Assert
-        session.IsCompleted.ShouldBeFalse();
-        session.PlannedExercises.ShouldBeEmpty();
+        // Act & Assert
+        Should.Throw<ArgumentException>(() => session.AddExercise(Guid.NewGuid(), 0, 8, 12));
+        Should.Throw<ArgumentException>(() => session.AddExercise(Guid.NewGuid(), 21, 8, 12));
+    }
+
+    [Fact]
+    public void AddExercise_ShouldThrowArgumentException_WhenExerciseIdIsEmpty()
+    {
+        // Arrange
+        var session = new TrainingSession(Guid.NewGuid(), DateTime.UtcNow, SessionType.Upper);
+
+        // Act & Assert
+        Should.Throw<ArgumentException>(() => session.AddExercise(Guid.Empty, 3, 8, 12));
+    }
+
+    [Fact]
+    public void AddSetToPerformance_ShouldThrowInvalidOperationException_WhenMaxSetsReached()
+    {
+        // Arrange
+        var session = new TrainingSession(Guid.NewGuid(), DateTime.UtcNow, SessionType.Upper);
+        var exerciseId = Guid.NewGuid();
+
+        for (int i = 0; i < 20; i++)
+        {
+            session.AddSetToPerformance(exerciseId, 100, 10);
+        }
+
+        // Act & Assert
+        Should.Throw<InvalidOperationException>(() =>
+            session.AddSetToPerformance(exerciseId, 100, 10))
+            .Message.ShouldContain("Maximum number of sets");
+    }
+
+    [Fact]
+    public void AddSetToPerformance_ShouldThrowArgumentException_WhenWeightIsNegative()
+    {
+        // Arrange
+        var session = new TrainingSession(Guid.NewGuid(), DateTime.UtcNow, SessionType.Upper);
+
+        // Act & Assert
+        Should.Throw<ArgumentException>(() =>
+            session.AddSetToPerformance(Guid.NewGuid(), -1, 10));
     }
 }

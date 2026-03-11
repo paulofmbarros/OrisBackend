@@ -62,7 +62,10 @@ public class CompleteWorkoutHandler : ICommandHandler<CompleteWorkoutCommand, Re
             var progressionState = await _progressionRepository.GetByUserIdAndExerciseIdAsync(session.UserId, performance.ExerciseId, cancellationToken);
             if (progressionState != null)
             {
-                var progressionResult = _progressionEngine.CalculateNextState(progressionState, performance);
+                var plannedExercise = session.PlannedExercises.FirstOrDefault(pe => pe.ExerciseId == performance.ExerciseId);
+                var targetReps = plannedExercise?.TargetRepRange.Max ?? 12;
+
+                var progressionResult = _progressionEngine.CalculateNextState(progressionState, performance, targetReps);
                 if (progressionResult.IsSuccess)
                 {
                     _progressionRepository.Update(progressionResult.Value);

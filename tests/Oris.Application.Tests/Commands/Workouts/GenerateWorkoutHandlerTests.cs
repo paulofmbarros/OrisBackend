@@ -50,6 +50,9 @@ public class GenerateWorkoutHandlerTests
         _workoutGeneratorMock.Setup(x => x.GenerateWorkoutAsync(user, command.SessionType, command.ScheduledDate, It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result<TrainingSession>.Success(session));
 
+        _exerciseRepositoryMock.Setup(x => x.GetByIdsAsync(It.IsAny<IEnumerable<Guid>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<Exercise>());
+
         // Act
         var result = await _handler.Handle(command, CancellationToken.None);
 
