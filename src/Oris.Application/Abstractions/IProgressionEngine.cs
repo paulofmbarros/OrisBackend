@@ -15,6 +15,6 @@ public interface IProgressionEngine
     /// <param name="performance">The latest exercise performance recorded.</param>
     /// <returns>A <see cref="Result{T}"/> containing the updated <see cref="ProgressionState"/>.</returns>
     Result<ProgressionState> CalculateNextState(
-        ProgressionState currentState, 
+        ProgressionState currentState,
         ExercisePerformance performance);
 }

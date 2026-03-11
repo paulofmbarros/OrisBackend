@@ -18,8 +18,8 @@ public interface IWorkoutGenerator
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>A <see cref="Result{T}"/> containing the generated <see cref="TrainingSession"/>.</returns>
     Task<Result<TrainingSession>> GenerateWorkoutAsync(
-        User user, 
-        SessionType type, 
-        DateTime scheduledDate, 
+        User user,
+        SessionType type,
+        DateTime scheduledDate,
         CancellationToken cancellationToken = default);
 }

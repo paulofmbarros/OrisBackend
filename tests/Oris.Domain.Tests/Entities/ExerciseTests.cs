@@ -13,13 +13,15 @@ public class ExerciseTests
         // Arrange
         var name = "Bench Press";
         var classification = ExerciseClassification.Compound;
+        var muscleGroup = MuscleGroup.Chest;
 
         // Act
-        var exercise = new Exercise(name, classification);
+        var exercise = new Exercise(name, classification, muscleGroup);
 
         // Assert
         exercise.Name.ShouldBe(name);
         exercise.Classification.ShouldBe(classification);
+        exercise.MuscleGroup.ShouldBe(muscleGroup);
     }
 
     [Theory]
@@ -29,6 +31,6 @@ public class ExerciseTests
     public void Constructor_ShouldThrowArgumentException_WhenNameIsInvalid(string? name)
     {
         // Act & Assert
-        Should.Throw<ArgumentException>(() => new Exercise(name!, ExerciseClassification.Accessory));
+        Should.Throw<ArgumentException>(() => new Exercise(name!, ExerciseClassification.Accessory, MuscleGroup.Chest));
     }
 }

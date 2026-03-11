@@ -15,6 +15,6 @@ public interface IVolumeController
     /// <param name="currentVolumes">Current weekly volume state for relevant muscle groups.</param>
     /// <returns>A <see cref="Result{T}"/> containing a filtered (and potentially weighted) collection of <see cref="Exercise"/>.</returns>
     Result<IEnumerable<Exercise>> FilterAndWeightExercises(
-        IEnumerable<Exercise> candidates, 
+        IEnumerable<Exercise> candidates,
         IEnumerable<WeeklyVolumeState> currentVolumes);
 }
