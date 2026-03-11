@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+source "$(cd "$(dirname "$0")" && pwd)/mcp_servers.sh"
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -141,6 +143,7 @@ if [[ -z "$OUTPUT_FILE" ]]; then
 fi
 mkdir -p "$(dirname "$OUTPUT_FILE")"
 
+SERVERS="$(mcp_servers::resolve_csv "$SERVERS")"
 REQUESTED_JSON="$(csv_to_json_array "$SERVERS")"
 EMPTY_JSON_ARRAY="[]"
 
@@ -211,8 +214,7 @@ else
     missing_arr=()
 
     for server in "${requested_arr[@]}"; do
-      # Match either "<server>:" or "<server> (from ...):" lines from "gemini mcp list".
-      lines="$(grep -Ei "[[:space:]]$server([[:space:]]|\\(|:)" "$CLEAN_OUTPUT" || true)"
+      lines="$(mcp_servers::matching_lines "$CLEAN_OUTPUT" "$server" || true)"
       if [[ -z "$lines" ]]; then
         missing_arr+=("$server")
         continue

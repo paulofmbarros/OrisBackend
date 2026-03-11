@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+source "$(cd "$(dirname "$0")" && pwd)/lib/mcp_servers.sh"
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -451,6 +453,7 @@ if [[ -n "${AGENT_MCP_SERVERS_OVERRIDE:-}" ]]; then
 else
   export AGENT_MCP_SERVERS="$(resolve_phase_mcp_servers "$PHASE" "$PROMPT")"
 fi
+export AGENT_MCP_SERVERS="$(mcp_servers::resolve_csv "$AGENT_MCP_SERVERS")"
 
 if [[ "$(normalize_bool "${HEADLESS:-false}")" == "true" ]]; then
   export AGENT_GEMINI_INTERACTIVE_MODE="never"
@@ -569,7 +572,7 @@ if [[ "$RUNTIME" == "gemini" ]] && [[ "$(normalize_bool "${AGENT_MCP_PREFLIGHT:-
 
     # Allow optional MCP servers to soft-fail preflight for review runs.
     # Default keeps Sonar from hard-blocking when its stdio warm-up is flaky.
-    SOFT_FAIL_SERVERS="$(normalize_csv_lower "${AGENT_MCP_PREFLIGHT_SOFT_FAIL_SERVERS:-sonarqube}")"
+    SOFT_FAIL_SERVERS="$(mcp_servers::resolve_csv "${AGENT_MCP_PREFLIGHT_SOFT_FAIL_SERVERS:-sonarqube}")"
     if [[ "$PHASE" == "review" ]] && [[ -n "$SOFT_FAIL_SERVERS" ]] && [[ -f "$PREFLIGHT_JSON_FILE" ]]; then
       disconnected_json="$(extract_json_array_literal "$PREFLIGHT_JSON_FILE" "disconnected_servers")"
       missing_json="$(extract_json_array_literal "$PREFLIGHT_JSON_FILE" "missing_servers")"

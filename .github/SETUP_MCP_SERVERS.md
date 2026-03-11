@@ -7,9 +7,10 @@ MCP (Model Context Protocol) servers are **not automatically installed** with yo
 Based on your configuration, the agent uses:
 - **`atlassian-rovo-mcp-server`** - For Jira/Confluence integration (specified in `gemini.sh`)
 - **Notion MCP** - **REQUIRED** for accessing Notion pages (domain definitions, contracts, etc.)
+- **Postman MCP** - Used by the QA phase to run the `Oris Backend` collection
 - **GitHub MCP** - Built-in to Gemini CLI for repository access
 
-**Important:** Your contract requires accessing Notion pages, so Notion MCP is essential!
+**Important:** Planning requires Notion MCP, and QA requires a working Postman MCP configuration with a valid `POSTMAN_API_KEY`.
 
 ## How MCP Servers Work
 
@@ -37,7 +38,13 @@ Cloud-based MCP servers like Atlassian Rovo don't need installation - they just 
     - Requires a Notion API integration token
     - Get token from: [Notion Integrations](https://www.notion.so/my-integrations)
 
-3. **Configuration format**:
+3. **Postman MCP Server** (for QA collection runs):
+    - Install on demand with `npx -y @postman/postman-mcp-server`
+    - Requires a valid Postman API key with access to the target workspace/collection
+    - Configure `POSTMAN_API_KEY` in the MCP server `env`
+    - If QA fails with `401 Unauthorized`, `getAuthenticatedUser`, `getWorkspaces`, or `runCollection` errors, the API key is missing, expired, or lacks access
+
+4. **Configuration format**:
    ```json
    {
      "mcpServers": {
@@ -54,6 +61,13 @@ Cloud-based MCP servers like Atlassian Rovo don't need installation - they just 
          "args": ["-y", "@modelcontextprotocol/server-notion"],
          "env": {
            "NOTION_API_KEY": "your-notion-integration-token"
+         }
+       },
+       "postman": {
+         "command": "npx",
+         "args": ["-y", "@postman/postman-mcp-server"],
+         "env": {
+           "POSTMAN_API_KEY": "your-postman-api-key"
          }
        }
      }
@@ -97,6 +111,7 @@ The workflows already include MCP configuration steps. You need to add these sec
 
 **Required Secrets:**
 - `NOTION_API_KEY` - Your Notion integration token (REQUIRED for Notion access)
+- `POSTMAN_API_KEY` - Required for Postman MCP QA runs
 
 **Optional Secrets (for Jira/Confluence):**
 - `ATLASSIAN_MCP_URL`
@@ -112,12 +127,15 @@ The workflow will automatically configure MCPs if these secrets are provided.
 - ❌ You need to set it up manually
 - ✅ Once configured, Gemini CLI will discover and use it automatically
 
+The same applies to Postman MCP locally: the `postman` server can appear in `gemini mcp list` even when the configured `POSTMAN_API_KEY` is invalid. A successful server listing does not prove QA auth is working.
+
 ## Quick Check
 
 To verify if MCP servers are working:
 1. Run the Gemini CLI locally with your API key
-2. Check if it can access Jira/Confluence tools
-3. If not, you need to configure the MCP server
+2. Check if `gemini mcp list` shows the expected servers as connected
+3. For Postman, also verify the configured `POSTMAN_API_KEY` can access your workspace by running a simple authenticated Postman MCP call
+4. If not, you need to configure or refresh the MCP server credentials
 
 ## Next Steps
 
@@ -126,6 +144,10 @@ To verify if MCP servers are working:
     - Either commit a template config (without secrets)
     - Or add a workflow step to generate the config from secrets
     - Add required secrets to GitHub Secrets
+3. If QA still fails after setup:
+    - Confirm the key in `~/.gemini/settings.json` is current
+    - Confirm the Postman account tied to that key can access workspace `Oris Team's Workspace`
+    - Confirm collection `Oris Backend` exists and is shared with that account
 
 ## Resources
 
