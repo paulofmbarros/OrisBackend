@@ -1,9 +1,9 @@
 using Moq;
 using Oris.Application.Abstractions;
 using Oris.Application.Commands.Workouts.GenerateWorkout;
-using Oris.Application.Common.Models;
 using Oris.Domain.Entities;
 using Oris.Domain.Enums;
+using Oris.Domain.Services;
 using Shouldly;
 
 namespace Oris.Application.Tests.Commands.Workouts;
@@ -40,6 +40,7 @@ public class GenerateWorkoutHandlerTests
         var user = new User("test@test.com");
         var command = new GenerateWorkoutCommand(userId, SessionType.Upper, DateTime.UtcNow);
         var session = new TrainingSession(userId, DateTime.UtcNow, SessionType.Upper);
+        var exercises = new List<Exercise>();
 
         _userRepositoryMock.Setup(x => x.GetByIdAsync(userId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(user);
@@ -47,17 +48,18 @@ public class GenerateWorkoutHandlerTests
         _sessionRepositoryMock.Setup(x => x.GetActiveSessionByUserIdAsync(userId, It.IsAny<CancellationToken>()))
             .ReturnsAsync((TrainingSession?)null);
 
-        _workoutGeneratorMock.Setup(x => x.GenerateWorkoutAsync(user, command.SessionType, command.ScheduledDate, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Result<TrainingSession>.Success(session));
+        _exerciseRepositoryMock.Setup(x => x.GetAllAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(exercises);
 
-        _exerciseRepositoryMock.Setup(x => x.GetByIdsAsync(It.IsAny<IEnumerable<Guid>>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new List<Exercise>());
+        _workoutGeneratorMock.Setup(x => x.GenerateWorkout(user, command.SessionType, command.ScheduledDate, exercises))
+            .Returns(session);
 
         // Act
         var result = await _handler.Handle(command, CancellationToken.None);
 
         // Assert
         result.IsSuccess.ShouldBeTrue();
+        _exerciseRepositoryMock.Verify(x => x.GetAllAsync(It.IsAny<CancellationToken>()), Times.Once);
         _sessionRepositoryMock.Verify(x => x.Add(session), Times.Once);
         _unitOfWorkMock.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
     }

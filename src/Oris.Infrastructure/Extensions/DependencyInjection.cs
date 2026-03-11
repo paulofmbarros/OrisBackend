@@ -7,10 +7,10 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.IdentityModel.Tokens;
 using Oris.Application.Abstractions;
+using Oris.Domain.Services;
 using Oris.Infrastructure.Identity;
 using Oris.Infrastructure.Persistence;
 using Oris.Infrastructure.Persistence.Repositories;
-using Oris.Infrastructure.Services;
 
 namespace Oris.Infrastructure.Extensions;
 

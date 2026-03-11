@@ -3,6 +3,7 @@ using Oris.Application.Common.Mapping;
 using Oris.Application.Common.Models;
 using Oris.Application.Dtos;
 using Oris.Domain.Entities;
+using Oris.Domain.Services;
 
 namespace Oris.Application.Commands.Workouts.GenerateWorkout;
 
@@ -43,22 +44,18 @@ public class GenerateWorkoutHandler : ICommandHandler<GenerateWorkoutCommand, Re
             return Result<TrainingSessionDto>.Failure(new Error("TrainingSession.ActiveExists", "An active training session already exists for this user."));
         }
 
-        var generationResult = await _workoutGenerator.GenerateWorkoutAsync(user, request.SessionType, request.ScheduledDate, cancellationToken);
-        if (generationResult.IsFailure)
-        {
-            return Result<TrainingSessionDto>.Failure(generationResult.Error);
-        }
-
-        var session = generationResult.Value;
+        var availableExercises = await _exerciseRepository.GetAllAsync(cancellationToken);
+        var session = _workoutGenerator.GenerateWorkout(user, request.SessionType, request.ScheduledDate, availableExercises);
         _sessionRepository.Add(session);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 
         var exerciseIds = session.PlannedExercises.Select(pe => pe.ExerciseId)
             .Union(session.Performances.Select(p => p.ExerciseId))
-            .Distinct();
+            .ToHashSet();
 
-        var exercises = await _exerciseRepository.GetByIdsAsync(exerciseIds, cancellationToken);
-        var exerciseMap = exercises.ToDictionary(e => e.Id, e => e.Name);
+        var exerciseMap = availableExercises
+            .Where(e => exerciseIds.Contains(e.Id))
+            .ToDictionary(e => e.Id, e => e.Name);
 
         return Result<TrainingSessionDto>.Success(session.ToDto(exerciseMap));
     }

@@ -90,4 +90,31 @@ public class RecordSetHandlerTests
         result.IsFailure.ShouldBeTrue();
         result.Error.Code.ShouldBe("TrainingSession.AlreadyCompleted");
     }
+
+    [Fact]
+    public async Task Handle_ShouldReturnFailure_WhenPerformanceCannotAcceptMoreSets()
+    {
+        // Arrange
+        var sessionId = Guid.NewGuid();
+        var exerciseId = Guid.NewGuid();
+        var session = new TrainingSession(Guid.NewGuid(), DateTime.UtcNow, SessionType.Upper);
+        for (var i = 0; i < 20; i++)
+        {
+            session.AddSetToPerformance(exerciseId, 100, 10, 8);
+        }
+
+        _sessionRepositoryMock.Setup(x => x.GetByIdAsync(sessionId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(session);
+
+        var command = new RecordSetCommand(sessionId, exerciseId, 100, 10, 8);
+
+        // Act
+        var result = await _handler.Handle(command, CancellationToken.None);
+
+        // Assert
+        result.IsFailure.ShouldBeTrue();
+        result.Error.Code.ShouldBe("TrainingSession.PerformanceError");
+        _sessionRepositoryMock.Verify(x => x.Update(It.IsAny<TrainingSession>()), Times.Never);
+        _unitOfWorkMock.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
 }

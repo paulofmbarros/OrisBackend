@@ -1,6 +1,7 @@
 using Oris.Application.Abstractions;
 using Oris.Application.Common.Models;
 using Oris.Domain.Entities;
+using Oris.Domain.Services;
 
 namespace Oris.Application.Commands.Workouts.CompleteWorkout;
 
@@ -65,11 +66,8 @@ public class CompleteWorkoutHandler : ICommandHandler<CompleteWorkoutCommand, Re
                 var plannedExercise = session.PlannedExercises.FirstOrDefault(pe => pe.ExerciseId == performance.ExerciseId);
                 var targetReps = plannedExercise?.TargetRepRange.Max ?? 12;
 
-                var progressionResult = _progressionEngine.CalculateNextState(progressionState, performance, targetReps);
-                if (progressionResult.IsSuccess)
-                {
-                    _progressionRepository.Update(progressionResult.Value);
-                }
+                var updatedProgressionState = _progressionEngine.CalculateNextState(progressionState, performance, targetReps);
+                _progressionRepository.Update(updatedProgressionState);
             }
         }
 

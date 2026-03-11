@@ -1,9 +1,9 @@
 using Moq;
 using Oris.Application.Abstractions;
 using Oris.Application.Commands.Workouts.CompleteWorkout;
-using Oris.Application.Common.Models;
 using Oris.Domain.Entities;
 using Oris.Domain.Enums;
+using Oris.Domain.Services;
 using Shouldly;
 
 namespace Oris.Application.Tests.Commands.Workouts;
@@ -62,7 +62,7 @@ public class CompleteWorkoutHandlerTests
             .ReturnsAsync(progressionState);
 
         _progressionEngineMock.Setup(x => x.CalculateNextState(progressionState, It.IsAny<ExercisePerformance>(), It.IsAny<int>()))
-            .Returns(Result<ProgressionState>.Success(progressionState));
+            .Returns(progressionState);
 
         var command = new CompleteWorkoutCommand(sessionId);
 
@@ -96,5 +96,145 @@ public class CompleteWorkoutHandlerTests
         // Assert
         result.IsFailure.ShouldBeTrue();
         result.Error.Code.ShouldBe("TrainingSession.NotFound");
+    }
+
+    [Fact]
+    public async Task Handle_ShouldReturnFailure_WhenSessionAlreadyCompleted()
+    {
+        // Arrange
+        var sessionId = Guid.NewGuid();
+        var session = new TrainingSession(Guid.NewGuid(), DateTime.UtcNow, SessionType.Upper);
+        session.Complete();
+
+        _sessionRepositoryMock.Setup(x => x.GetByIdAsync(sessionId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(session);
+
+        var command = new CompleteWorkoutCommand(sessionId);
+
+        // Act
+        var result = await _handler.Handle(command, CancellationToken.None);
+
+        // Assert
+        result.IsFailure.ShouldBeTrue();
+        result.Error.Code.ShouldBe("TrainingSession.AlreadyCompleted");
+        _sessionRepositoryMock.Verify(x => x.Update(It.IsAny<TrainingSession>()), Times.Never);
+        _unitOfWorkMock.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Handle_ShouldSkipPerformanceStateUpdates_WhenExerciseIsMissing()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+        var exerciseId = Guid.NewGuid();
+        var session = new TrainingSession(userId, DateTime.UtcNow, SessionType.Upper);
+        session.AddSetToPerformance(exerciseId, 100, 10, 8);
+
+        _sessionRepositoryMock.Setup(x => x.GetByIdAsync(sessionId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(session);
+
+        _exerciseRepositoryMock.Setup(x => x.GetByIdAsync(exerciseId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Exercise?)null);
+
+        var command = new CompleteWorkoutCommand(sessionId);
+
+        // Act
+        var result = await _handler.Handle(command, CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.ShouldBeTrue();
+        _volumeRepositoryMock.Verify(x => x.GetByUserIdAndMuscleGroupAsync(It.IsAny<Guid>(), It.IsAny<MuscleGroup>(), It.IsAny<CancellationToken>()), Times.Never);
+        _progressionRepositoryMock.Verify(x => x.GetByUserIdAndExerciseIdAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        _progressionEngineMock.Verify(x => x.CalculateNextState(It.IsAny<ProgressionState>(), It.IsAny<ExercisePerformance>(), It.IsAny<int>()), Times.Never);
+        _sessionRepositoryMock.Verify(x => x.Update(session), Times.Once);
+        _unitOfWorkMock.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Handle_ShouldSkipRepositoryUpdates_WhenVolumeAndProgressionStatesAreMissing()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+        var exerciseId = Guid.NewGuid();
+        var session = new TrainingSession(userId, DateTime.UtcNow, SessionType.Upper);
+        session.AddSetToPerformance(exerciseId, 100, 10, 8);
+
+        var exercise = new Exercise("Bench Press", ExerciseClassification.Compound, MuscleGroup.Chest);
+
+        _sessionRepositoryMock.Setup(x => x.GetByIdAsync(sessionId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(session);
+
+        _exerciseRepositoryMock.Setup(x => x.GetByIdAsync(exerciseId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(exercise);
+
+        _volumeRepositoryMock.Setup(x => x.GetByUserIdAndMuscleGroupAsync(userId, MuscleGroup.Chest, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((WeeklyVolumeState?)null);
+
+        _progressionRepositoryMock.Setup(x => x.GetByUserIdAndExerciseIdAsync(userId, exerciseId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ProgressionState?)null);
+
+        var command = new CompleteWorkoutCommand(sessionId);
+
+        // Act
+        var result = await _handler.Handle(command, CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.ShouldBeTrue();
+        _volumeRepositoryMock.Verify(x => x.Update(It.IsAny<WeeklyVolumeState>()), Times.Never);
+        _progressionEngineMock.Verify(x => x.CalculateNextState(It.IsAny<ProgressionState>(), It.IsAny<ExercisePerformance>(), It.IsAny<int>()), Times.Never);
+        _progressionRepositoryMock.Verify(x => x.Update(It.IsAny<ProgressionState>()), Times.Never);
+        _sessionRepositoryMock.Verify(x => x.Update(session), Times.Once);
+        _unitOfWorkMock.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Handle_ShouldUsePlannedTargetReps_WhenUpdatingProgression()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+        var exerciseId = Guid.NewGuid();
+        var session = new TrainingSession(userId, DateTime.UtcNow, SessionType.Upper);
+        session.AddExercise(exerciseId, 3, 8, 10);
+        session.AddSetToPerformance(exerciseId, 100, 10, 8);
+
+        var exercise = new Exercise("Bench Press", ExerciseClassification.Compound, MuscleGroup.Chest);
+        var progressionState = new ProgressionState(userId, exerciseId, 100, 10, 8);
+        var updatedProgressionState = new ProgressionState(userId, exerciseId, 102.5, 10, 8);
+
+        _sessionRepositoryMock.Setup(x => x.GetByIdAsync(sessionId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(session);
+
+        _exerciseRepositoryMock.Setup(x => x.GetByIdAsync(exerciseId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(exercise);
+
+        _volumeRepositoryMock.Setup(x => x.GetByUserIdAndMuscleGroupAsync(userId, MuscleGroup.Chest, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((WeeklyVolumeState?)null);
+
+        _progressionRepositoryMock.Setup(x => x.GetByUserIdAndExerciseIdAsync(userId, exerciseId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(progressionState);
+
+        _progressionEngineMock.Setup(x => x.CalculateNextState(
+                progressionState,
+                It.IsAny<ExercisePerformance>(),
+                10))
+            .Returns(updatedProgressionState);
+
+        var command = new CompleteWorkoutCommand(sessionId);
+
+        // Act
+        var result = await _handler.Handle(command, CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.ShouldBeTrue();
+        _progressionEngineMock.Verify(x => x.CalculateNextState(
+            progressionState,
+            It.IsAny<ExercisePerformance>(),
+            10), Times.Once);
+        _progressionRepositoryMock.Verify(x => x.Update(updatedProgressionState), Times.Once);
+        _sessionRepositoryMock.Verify(x => x.Update(session), Times.Once);
+        _unitOfWorkMock.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
 }
