@@ -6,7 +6,7 @@ on:
 
 jobs:
   revise:
-    if: contains(github.event.comment.body, '/revise')
+    if: startsWith(github.event.comment.body, '/revise ')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -24,133 +24,98 @@ jobs:
         env:
           COMMENT_BODY_VAL: ${{ github.event.comment.body }}
           ISSUE_NUMBER_VAL: ${{ github.event.issue.number }}
-          PR_NUMBER_VAL: ${{ github.event.pull_request.number }}
         run: |
-          COMMENT_BODY="$COMMENT_BODY_VAL"
-          REVISION_FEEDBACK=$(echo "$COMMENT_BODY" | sed -E 's|^\s*/revise\s+||')
-          
+          REVISION_FEEDBACK="$(printf '%s\n' "$COMMENT_BODY_VAL" | sed -E 's|^\s*/revise\s+||')"
+
           if [ -z "$REVISION_FEEDBACK" ]; then
-            echo "Error: No revision feedback provided. Please include feedback after /revise"
-            echo "Example: /revise Please use a different authentication approach"
+            echo "Revision feedback cannot be empty." >&2
             exit 1
           fi
-          
-          echo "REVISION_FEEDBACK<<EOF" >> $GITHUB_OUTPUT
-          echo "$REVISION_FEEDBACK" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-          
-          # Use either issue number or PR number
-          ISSUE_NUMBER="$ISSUE_NUMBER_VAL"
-          if [ -z "$ISSUE_NUMBER" ]; then
-            ISSUE_NUMBER="$PR_NUMBER_VAL"
-          fi
-          echo "ISSUE_NUMBER=$ISSUE_NUMBER" >> $GITHUB_OUTPUT
 
-      - name: Find original plan
+          {
+            echo "REVISION_FEEDBACK<<EOF"
+            echo "$REVISION_FEEDBACK"
+            echo "EOF"
+            echo "ISSUE_NUMBER=$ISSUE_NUMBER_VAL"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Find latest plan run
         id: find_plan
         uses: actions/github-script@v7
         with:
           script: |
-            const issueNumber = parseInt('${{ steps.extract_revision.outputs.ISSUE_NUMBER }}');
             const comments = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: issueNumber,
+              issue_number: context.payload.issue.number,
             });
-            
-            // Find the most recent plan comment
+
             let planRunId = null;
-            let originalPrompt = null;
-            let jiraTicket = null;
-            
-            for (const comment of comments.data.reverse()) {
-              const runIdMatch = comment.body.match(/Agent Plan Run ID: (\d+)/);
-              if (runIdMatch && comment.body.includes('AI Agent Plan')) {
-                planRunId = runIdMatch[1];
+            for (const comment of comments.data.slice().reverse()) {
+              const match =
+                comment.body.match(/Agent Plan Run ID:\s*(\d+)/) ||
+                comment.body.match(/\*\*Run ID:\*\*\s*(\d+)/) ||
+                comment.body.match(/Run ID:\s*(\d+)/);
+
+              if (match && /AI Agent Plan/.test(comment.body)) {
+                planRunId = match[1];
                 break;
               }
             }
-            
+
             if (!planRunId) {
-              core.setFailed('Could not find original plan. Please ensure a plan was generated first.');
+              core.setFailed('Could not find the latest plan run to revise.');
               return;
             }
-            
-            // Try to download the original plan artifact
-            try {
-              const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                run_id: parseInt(planRunId),
-              });
-            
-              const planArtifact = artifacts.data.artifacts.find(a => a.name === 'agent-plan');
-              if (planArtifact) {
-                const download = await github.rest.actions.downloadArtifact({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  artifact_id: planArtifact.id,
-                  archive_format: 'zip',
-                });
-            
-                const fs = require('fs');
-                const { execSync } = require('child_process');
-            
-                fs.mkdirSync('original-plan', { recursive: true });
-                fs.writeFileSync('original-plan.zip', Buffer.from(download.data));
-                execSync('unzip -q original-plan.zip -d original-plan/');
-            
-                if (fs.existsSync('original-plan/prompt.txt')) {
-                  originalPrompt = fs.readFileSync('original-plan/prompt.txt', 'utf8').trim();
-                }
-                
-                if (fs.existsSync('original-plan/jira_ticket.txt')) {
-                  jiraTicket = fs.readFileSync('original-plan/jira_ticket.txt', 'utf8').trim();
-                }
-            
-                execSync('rm -rf original-plan original-plan.zip');
-              }
-            } catch (error) {
-              core.warning(`Could not download original plan: ${error.message}`);
-            }
-            
-            // Fallback: try to extract from issue/PR title
-            if (!originalPrompt) {
-              try {
-                const issue = await github.rest.issues.get({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: issueNumber,
-                });
-            
-                const title = issue.data.title || '';
-                const body = issue.data.body || '';
-                const jiraMatch = (title + ' ' + body).match(/([A-Z]+-[0-9]+)/);
-            
-                if (jiraMatch) {
-                  originalPrompt = `Work on Jira ticket ${jiraMatch[1]}`;
-                  if (!jiraTicket) jiraTicket = jiraMatch[1];
-                } else {
-                  originalPrompt = 'Work on the requested task';
-                }
-              } catch (error) {
-                originalPrompt = 'Work on the requested task';
-              }
-            }
-            
-            core.setOutput('plan_run_id', planRunId);
-            core.setOutput('original_prompt', originalPrompt || 'Work on the requested task');
-            core.setOutput('jira_ticket', jiraTicket || '');
 
-      - name: Download original plan artifact
+            core.setOutput('run_id', planRunId);
+
+      - name: Download plan context
         uses: dawidd6/action-download-artifact@v3
         with:
-          name: agent-plan
-          path: original-plan/
+          name: agent-context
+          path: plan-context/
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          run_id: ${{ steps.find_plan.outputs.plan_run_id }}
-          if_no_artifact_found: warn
-          workflow: agent-plan.yml
+          run_id: ${{ steps.find_plan.outputs.run_id }}
+          if_no_artifact_found: fail
+
+      - name: Download plan state
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          name: agent-state
+          path: plan-state/
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          run_id: ${{ steps.find_plan.outputs.run_id }}
+          if_no_artifact_found: fail
+
+      - name: Read plan context
+        id: plan_context
+        run: |
+          if [ ! -f plan-context/prompt.txt ]; then
+            echo "Missing plan prompt artifact." >&2
+            exit 1
+          fi
+
+          {
+            echo "PROMPT<<EOF"
+            cat plan-context/prompt.txt
+            echo "EOF"
+            echo "ROLE=$(cat plan-context/role.txt)"
+            echo "RUNTIME=$(cat plan-context/runtime.txt)"
+            echo "JIRA_KEY=$(cat plan-context/jira_ticket.txt)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Restore plan state
+        run: |
+          mkdir -p tmp/state
+
+          if [ -f plan-state/active_plan.md ]; then
+            cp plan-state/active_plan.md tmp/state/active_plan.md
+          fi
+
+          if [ -f plan-state/active_ticket.txt ]; then
+            cp plan-state/active_ticket.txt tmp/state/active_ticket.txt
+          fi
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -158,51 +123,45 @@ jobs:
           node-version: '20'
 
       - name: Install Gemini CLI
-        run: npm install -g @google/gemini-cli
+        run: npm install -g --ignore-scripts @google/gemini-cli
 
-      - name: Configure MCP Servers
+      - name: Configure MCP servers
         run: |
           mkdir -p ~/.gemini
-          
-          # Use Node.js to generate proper JSON
-          node << 'EOF'
+
+          node <<'EOF'
           const fs = require('fs');
           const mcpServers = {};
-          
-          // Add Notion MCP (required for contract)
+
           if (process.env.NOTION_API_KEY) {
             mcpServers.notion = {
-              command: "npx",
-              args: ["-y", "@modelcontextprotocol/server-notion"],
+              command: 'npx',
+              args: ['-y', '@modelcontextprotocol/server-notion'],
               env: {
-                NOTION_API_KEY: process.env.NOTION_API_KEY
-              }
+                NOTION_API_KEY: process.env.NOTION_API_KEY,
+              },
             };
           }
-          
-          // Add Atlassian Rovo MCP (optional)
-          if (process.env.ATLASSIAN_MCP_URL) {
-            mcpServers["atlassian-rovo-mcp-server"] = {
+
+          if (
+            process.env.ATLASSIAN_MCP_URL &&
+            process.env.ATLASSIAN_MCP_CLIENT_ID &&
+            process.env.ATLASSIAN_MCP_CLIENT_SECRET
+          ) {
+            mcpServers['atlassian-rovo-mcp-server'] = {
               url: process.env.ATLASSIAN_MCP_URL,
               auth: {
-                type: "oauth2",
+                type: 'oauth2',
                 clientId: process.env.ATLASSIAN_MCP_CLIENT_ID,
-                clientSecret: process.env.ATLASSIAN_MCP_CLIENT_SECRET
-              }
+                clientSecret: process.env.ATLASSIAN_MCP_CLIENT_SECRET,
+              },
             };
           }
-          
-          const config = {
-            mcpServers: mcpServers
-          };
-          
+
           fs.writeFileSync(
             process.env.HOME + '/.gemini/settings.json',
-            JSON.stringify(config, null, 2)
+            JSON.stringify({ mcpServers }, null, 2)
           );
-          
-          console.log('MCP servers configured:');
-          console.log(JSON.stringify(config, null, 2));
           EOF
         env:
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
@@ -213,125 +172,176 @@ jobs:
       - name: Setup environment
         run: |
           chmod +x scripts/agent.sh
+          chmod +x scripts/run-phase.sh
           chmod +x scripts/runtimes/*.sh
+          chmod +x scripts/lib/*.sh
 
-      - name: Run agent with revision
+      - name: Prepare revised prompt
+        id: prep_agent
+        env:
+          PROMPT: ${{ steps.plan_context.outputs.PROMPT }}
+          REVISION_FEEDBACK: ${{ steps.extract_revision.outputs.REVISION_FEEDBACK }}
+          ROLE: ${{ steps.plan_context.outputs.ROLE }}
+        run: |
+          CONTRACT_FILE="agent-contracts/${ROLE}.md"
+
+          FULL_PROMPT="You are the Oris Backend Engineer AI.
+
+          ### CRITICAL RESOURCES:
+          Your mandatory behavior contract and architecture rules are located in: '${CONTRACT_FILE}'.
+
+          ### RULES:
+          1. **READ THE CONTRACT**: Use your file system tools to read '${CONTRACT_FILE}' immediately.
+          2. **MCP TOOLS**:
+             - Use Notion MCP to search for 'Domain Definition' and the Jira ticket key.
+             - Summarize findings in 'Notion References'.
+
+          ### TASK:
+          ${PROMPT}
+
+          ### REVISION REQUEST:
+          ${REVISION_FEEDBACK}
+
+          IMPORTANT: Stop after 'Proposed Plan'. Do not implement yet."
+
+          {
+            echo "ENHANCED_PROMPT<<EOF"
+            echo "$FULL_PROMPT"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run revised plan phase
         id: agent_revision
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          ORIGINAL_PROMPT: ${{ steps.find_plan.outputs.original_prompt }}
-          REVISION_FEEDBACK: ${{ steps.extract_revision.outputs.REVISION_FEEDBACK }}
-          JIRA_TICKET: ${{ steps.find_plan.outputs.jira_ticket }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ROLE: ${{ steps.plan_context.outputs.ROLE }}
+          RUNTIME: ${{ steps.plan_context.outputs.RUNTIME }}
+          ENHANCED_PROMPT: ${{ steps.prep_agent.outputs.ENHANCED_PROMPT }}
         run: |
           set +e
-          
-          OUTPUT_FILE=$(mktemp)
-          ERROR_FILE=$(mktemp)
-          
-          # Build enhanced prompt with revision feedback
-          ENHANCED_PROMPT="$ORIGINAL_PROMPT"$'\n\n'"REVISION REQUEST:"$'\n'"The previous plan needs to be revised based on the following feedback:"$'\n'"$REVISION_FEEDBACK"$'\n\n'"Please generate a revised plan that addresses this feedback while maintaining alignment with the original requirements."
-          
-          # Run agent
-          ./scripts/agent.sh \
-            --runtime gemini \
-            --role backend \
+          OUTPUT_FILE="$(mktemp)"
+          ERROR_FILE="$(mktemp)"
+
+          HEADLESS=true ./scripts/run-phase.sh \
+            --runtime "$RUNTIME" \
+            --role "$ROLE" \
+            --phase plan \
             "$ENHANCED_PROMPT" \
             > "$OUTPUT_FILE" 2> "$ERROR_FILE"
-          
+
           EXIT_CODE=$?
-          
-          # Save outputs
-          echo "PLAN_OUTPUT<<EOF" >> $GITHUB_OUTPUT
-          cat "$OUTPUT_FILE" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-          
-          echo "EXIT_CODE=$EXIT_CODE" >> $GITHUB_OUTPUT
-          
-          # Save to artifact
-          mkdir -p plan-artifact
-          cp "$OUTPUT_FILE" plan-artifact/plan-output.txt
-          cp "$ERROR_FILE" plan-artifact/plan-error.txt
-          echo "$ENHANCED_PROMPT" > plan-artifact/prompt.txt
-          echo "backend" > plan-artifact/role.txt
-          echo "gemini" > plan-artifact/runtime.txt
-          echo "true" > plan-artifact/is-revision.txt
-          echo "$REVISION_FEEDBACK" > plan-artifact/revision-feedback.txt
-          echo "$JIRA_TICKET" > plan-artifact/jira_ticket.txt
-          
-          rm -f "$OUTPUT_FILE" "$ERROR_FILE"
-          
-          # Re-enable exit on error and fail if there were errors
-          set -e
-          
-          # Check for errors and fail if any
-          if [ $EXIT_CODE -ne 0 ]; then
-            echo "❌ Agent revision phase failed with exit code: $EXIT_CODE"
-            if [ -s plan-artifact/plan-error.txt ]; then
-              echo "Error output:"
-              cat plan-artifact/plan-error.txt
-            fi
-            exit $EXIT_CODE
+
+          {
+            echo "PLAN_OUTPUT<<EOF"
+            cat "$OUTPUT_FILE"
+            echo "EOF"
+            echo "PLAN_ERROR<<EOF"
+            cat "$ERROR_FILE"
+            echo "EOF"
+            echo "EXIT_CODE=$EXIT_CODE"
+          } >> "$GITHUB_OUTPUT"
+
+          mkdir -p plan-output-temp
+          cp "$OUTPUT_FILE" plan-output-temp/output.txt
+          cp "$ERROR_FILE" plan-output-temp/error.txt
+          echo "$EXIT_CODE" > plan-output-temp/exit_code.txt
+
+          if [ "$EXIT_CODE" -ne 0 ]; then
+            exit "$EXIT_CODE"
           fi
-          
-          # Also check if error file has content (even if exit code was 0)
-          if [ -s plan-artifact/plan-error.txt ]; then
-            ERROR_CONTENT=$(cat plan-artifact/plan-error.txt)
-            # Check for common error patterns
-            if echo "$ERROR_CONTENT" | grep -qiE "(error|failed|exception|command not found|permission denied|not found)"; then
-              echo "❌ Errors detected in plan revision:"
-              echo "$ERROR_CONTENT"
-              exit 1
-            fi
+
+      - name: Save revised context
+        env:
+          PROMPT: ${{ steps.plan_context.outputs.PROMPT }}
+          ROLE: ${{ steps.plan_context.outputs.ROLE }}
+          RUNTIME: ${{ steps.plan_context.outputs.RUNTIME }}
+          JIRA_KEY: ${{ steps.plan_context.outputs.JIRA_KEY }}
+        run: |
+          mkdir -p plan-context-out
+          printf '%s\n' "$PROMPT" > plan-context-out/prompt.txt
+          printf '%s\n' "$ROLE" > plan-context-out/role.txt
+          printf '%s\n' "$RUNTIME" > plan-context-out/runtime.txt
+          printf '%s\n' "$JIRA_KEY" > plan-context-out/jira_ticket.txt
+
+      - name: Save revised plan state
+        run: |
+          mkdir -p plan-state-out
+
+          if [ -f tmp/state/active_plan.md ]; then
+            cp tmp/state/active_plan.md plan-state-out/active_plan.md
+          fi
+
+          if [ -f tmp/state/active_ticket.txt ]; then
+            cp tmp/state/active_ticket.txt plan-state-out/active_ticket.txt
+          fi
+
+          if [ ! -f plan-state-out/active_plan.md ]; then
+            echo "Missing tmp/state/active_plan.md after revised planning run." >&2
+            exit 1
           fi
 
       - name: Display revised plan output
         if: steps.agent_revision.outputs.PLAN_OUTPUT != ''
         run: |
-          echo "## 🔄 AI Agent Revised Plan Output" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          cat plan-artifact/plan-output.txt >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          
-          echo "=== Revised Plan Output ==="
-          cat plan-artifact/plan-output.txt
+          echo "## Revised Plan Output" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat plan-output-temp/output.txt >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload revised plan artifact
         uses: actions/upload-artifact@v7
         with:
           name: agent-plan
-          path: plan-artifact/
+          path: plan-output-temp/
           retention-days: 7
 
-      - name: Post revised plan as comment
+      - name: Upload revised context artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: agent-context
+          path: plan-context-out/
+          retention-days: 7
+
+      - name: Upload revised state artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: agent-state
+          path: plan-state-out/
+          retention-days: 7
+
+      - name: Post revised plan comment
         uses: actions/github-script@v7
+        env:
+          ISSUE_NUMBER: ${{ steps.extract_revision.outputs.ISSUE_NUMBER }}
+          PLAN_OUTPUT: ${{ steps.agent_revision.outputs.PLAN_OUTPUT }}
+          REVISION_FEEDBACK: ${{ steps.extract_revision.outputs.REVISION_FEEDBACK }}
         with:
           script: |
-            const issueNumber = parseInt('${{ steps.extract_revision.outputs.ISSUE_NUMBER }}');
-            const planOutput = `${{ steps.agent_revision.outputs.PLAN_OUTPUT }}`;
-            const revisionFeedback = `${{ steps.extract_revision.outputs.REVISION_FEEDBACK }}`;
-            
-            const body = `## 🔄 AI Agent Plan (Revised)
-            
-            > **Revision Feedback:** ${revisionFeedback}
-            
+            const issueNumber = Number(process.env.ISSUE_NUMBER);
+            const planOutput = process.env.PLAN_OUTPUT || '';
+            const revisionFeedback = process.env.REVISION_FEEDBACK || '';
+
+            const body = `## AI Agent Plan (Revised)
+
+            > Revision feedback: ${revisionFeedback}
+
             ${planOutput}
-            
+
             ---
-            
-            ### ⚠️ Review Required
-            
-            **Options:**
-            1. ✅ **Approve and proceed**: Click the "Review deployments" button below and approve, or comment: \`/proceed\`
-            2. 🔄 **Request more changes**: Comment: \`/revise <your feedback here>\` to modify the plan again
-            3. ❌ **Cancel**: Close this issue/PR
-            
+            **Run ID:** ${process.env.GITHUB_RUN_ID}
+
+            Next:
+            - Comment \`/proceed\` to implement the revised plan
+            - Comment \`/revise <feedback>\` to request another revision
+
             <!-- Agent Plan Run ID: ${process.env.GITHUB_RUN_ID} -->`;
-            
-            github.rest.issues.createComment({
+
+            await github.rest.issues.createComment({
               issue_number: issueNumber,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: body
+              body,
             });

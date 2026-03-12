@@ -1,7 +1,6 @@
 name: AI Agent - Plan Phase
 
 on:
-  # Manual trigger via GitHub UI
   workflow_dispatch:
     inputs:
       jira_ticket:
@@ -22,14 +21,12 @@ on:
         type: choice
         options:
           - gemini
-          - claude
-          - codex
-  # Trigger via comments (/agent or /revise)
   issue_comment:
     types: [created]
 
 jobs:
   plan:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.comment.body, '/agent ')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -50,146 +47,129 @@ jobs:
           INPUT_RUNTIME: ${{ github.event.inputs.runtime }}
           COMMENT_BODY_VAL: ${{ github.event.comment.body }}
           ISSUE_NUMBER_VAL: ${{ github.event.issue.number }}
-          ISSUE_TITLE_VAL: ${{ github.event.issue.title }}
         run: |
           JIRA_KEY=""
-          # 1. Handle Manual Trigger (Workflow Dispatch)
+          ROLE="backend"
+          RUNTIME="gemini"
+          ISSUE_NUMBER=""
+
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             JIRA_KEY="$INPUT_JIRA_TICKET"
-            echo "PROMPT=Work on Jira ticket $JIRA_KEY" >> $GITHUB_OUTPUT
-            echo "ROLE=$INPUT_ROLE" >> $GITHUB_OUTPUT
-            echo "RUNTIME=$INPUT_RUNTIME" >> $GITHUB_OUTPUT
-            echo "ISSUE_NUMBER=" >> $GITHUB_OUTPUT
-
-          # 2. Handle Comment Trigger (ChatOps)
-          elif [ "$EVENT_NAME" = "issue_comment" ]; then
+            ROLE="$INPUT_ROLE"
+            RUNTIME="$INPUT_RUNTIME"
+            PROMPT="Work on Jira ticket $JIRA_KEY"
+          else
             COMMENT_BODY="$COMMENT_BODY_VAL"
-          
-            # Case A: New Plan (/agent ...)
-            if echo "$COMMENT_BODY" | grep -qE "^\s*/agent\s+"; then
-              PROMPT=$(echo "$COMMENT_BODY" | sed -E 's|^\s*/agent\s+||')
-              JIRA_KEY=$(echo "$PROMPT" | grep -oE '[A-Z]+-[0-9]+' | head -1 || echo "")
-              echo "PROMPT=$PROMPT" >> $GITHUB_OUTPUT
-              echo "ROLE=backend" >> $GITHUB_OUTPUT
-              echo "RUNTIME=gemini" >> $GITHUB_OUTPUT
-              echo "ISSUE_NUMBER=$ISSUE_NUMBER_VAL" >> $GITHUB_OUTPUT
-              echo "IS_REVISION=false" >> $GITHUB_OUTPUT
-          
-            # Case B: Revision (/revise ...)
-            elif echo "$COMMENT_BODY" | grep -qE "^\s*/revise\s+"; then
-              REVISION_FEEDBACK=$(echo "$COMMENT_BODY" | sed -E 's|^\s*/revise\s+||')
-              ISSUE_TITLE="$ISSUE_TITLE_VAL"
-              JIRA_KEY=$(echo "$ISSUE_TITLE" | grep -oE '[A-Z]+-[0-9]+' | head -1 || echo "")
-              echo "REVISION_FEEDBACK=$REVISION_FEEDBACK" >> $GITHUB_OUTPUT
-              echo "IS_REVISION=true" >> $GITHUB_OUTPUT
-              echo "ISSUE_NUMBER=$ISSUE_NUMBER_VAL" >> $GITHUB_OUTPUT
-              echo "ROLE=backend" >> $GITHUB_OUTPUT
-              echo "RUNTIME=gemini" >> $GITHUB_OUTPUT
-            else
-              echo "SKIP=true" >> $GITHUB_OUTPUT
-            fi
+            PROMPT="$(printf '%s\n' "$COMMENT_BODY" | sed -E 's|^\s*/agent\s+||')"
+            JIRA_KEY="$(printf '%s\n' "$PROMPT" | grep -oE '[A-Z]+-[0-9]+' | head -1 || true)"
+            ISSUE_NUMBER="$ISSUE_NUMBER_VAL"
           fi
-          
-          echo "JIRA_KEY=$JIRA_KEY" >> $GITHUB_OUTPUT
 
-      - name: Skip if not agent trigger
-        if: steps.context.outputs.SKIP == 'true'
-        run: |
-          echo "Not an agent trigger, skipping..."
-          exit 0
+          if [ -z "$PROMPT" ]; then
+            echo "Prompt cannot be empty." >&2
+            exit 1
+          fi
+
+          {
+            echo "PROMPT<<EOF"
+            echo "$PROMPT"
+            echo "EOF"
+            echo "ROLE=$ROLE"
+            echo "RUNTIME=$RUNTIME"
+            echo "JIRA_KEY=$JIRA_KEY"
+            echo "ISSUE_NUMBER=$ISSUE_NUMBER"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
           node-version: '20'
 
-      - name: Cache npm packages
-        uses: actions/cache@v5
-        with:
-          path: ~/.npm
-          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-node-
+      - name: Install Gemini CLI
+        run: npm install -g --ignore-scripts @google/gemini-cli
 
-      - name: Install AI CLI Tools
+      - name: Configure MCP Servers
         run: |
-          npm install -g @google/gemini-cli
+          mkdir -p ~/.gemini
+
+          node <<'EOF'
+          const fs = require('fs');
+          const mcpServers = {};
+
+          if (process.env.NOTION_API_KEY) {
+            mcpServers.notion = {
+              command: 'npx',
+              args: ['-y', '@modelcontextprotocol/server-notion'],
+              env: {
+                NOTION_API_KEY: process.env.NOTION_API_KEY,
+              },
+            };
+          }
+
+          if (
+            process.env.ATLASSIAN_MCP_URL &&
+            process.env.ATLASSIAN_MCP_CLIENT_ID &&
+            process.env.ATLASSIAN_MCP_CLIENT_SECRET
+          ) {
+            mcpServers['atlassian-rovo-mcp-server'] = {
+              url: process.env.ATLASSIAN_MCP_URL,
+              auth: {
+                type: 'oauth2',
+                clientId: process.env.ATLASSIAN_MCP_CLIENT_ID,
+                clientSecret: process.env.ATLASSIAN_MCP_CLIENT_SECRET,
+              },
+            };
+          }
+
+          fs.writeFileSync(
+            process.env.HOME + '/.gemini/settings.json',
+            JSON.stringify({ mcpServers }, null, 2)
+          );
+          EOF
+        env:
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          ATLASSIAN_MCP_URL: ${{ secrets.ATLASSIAN_MCP_URL }}
+          ATLASSIAN_MCP_CLIENT_ID: ${{ secrets.ATLASSIAN_MCP_CLIENT_ID }}
+          ATLASSIAN_MCP_CLIENT_SECRET: ${{ secrets.ATLASSIAN_MCP_CLIENT_SECRET }}
 
       - name: Setup environment
         run: |
           chmod +x scripts/agent.sh
+          chmod +x scripts/run-phase.sh
           chmod +x scripts/runtimes/*.sh
+          chmod +x scripts/lib/*.sh
 
-      - name: Handle plan revision
-        if: steps.context.outputs.IS_REVISION == 'true'
-        id: revision_context
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const comments = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: parseInt('${{ steps.context.outputs.ISSUE_NUMBER }}'),
-            });
-            
-            let originalPrompt = null;
-            let planRunId = null;
-            for (const comment of comments.data.reverse()) {
-              const runIdMatch = comment.body.match(/Agent Plan Run ID: (\d+)/);
-              if (runIdMatch && comment.body.includes('🤖 AI Agent Plan')) {
-                planRunId = runIdMatch[1];
-                break;
-              }
-            }
-            
-            // Fallback if ID not found, just valid so workflow doesn't crash on simple test
-            if (!planRunId) {
-               console.log('Warning: Could not find original plan run ID. Proceeding with generic context.');
-            }
-            
-            originalPrompt = 'Work on Jira ticket';
-            core.setOutput('original_prompt', originalPrompt);
-            core.setOutput('plan_run_id', planRunId);
-
-      - name: Prepare Agent Prompt
+      - name: Prepare agent prompt
         id: prep_agent
         env:
-          IS_REVISION: ${{ steps.context.outputs.IS_REVISION }}
-          ORIGINAL_PROMPT: ${{ steps.revision_context.outputs.original_prompt }}
-          REVISION_FEEDBACK: ${{ steps.context.outputs.REVISION_FEEDBACK }}
           PROMPT: ${{ steps.context.outputs.PROMPT }}
           ROLE: ${{ steps.context.outputs.ROLE }}
         run: |
-          if [ "$IS_REVISION" = "true" ]; then
-            BASE_PROMPT="$ORIGINAL_PROMPT"
-            TASK_INSTRUCTION="$BASE_PROMPT"$'\n\n'"REVISION REQUEST: The previous plan needs to be revised based on: $REVISION_FEEDBACK"
-          else
-            TASK_INSTRUCTION="$PROMPT"
-          fi
-          
           CONTRACT_FILE="agent-contracts/${ROLE}.md"
-          
+
           FULL_PROMPT="You are the Oris Backend Engineer AI.
-          
+
           ### CRITICAL RESOURCES:
           Your mandatory behavior contract and architecture rules are located in: '${CONTRACT_FILE}'.
-          
+
           ### RULES:
           1. **READ THE CONTRACT**: Use your file system tools to read '${CONTRACT_FILE}' immediately.
-          2. **MCP TOOLS**: 
+          2. **MCP TOOLS**:
              - Use Notion MCP to search for 'Domain Definition' and the Jira ticket key.
              - Summarize findings in 'Notion References'.
-          
-          ### TASK:
-          $TASK_INSTRUCTION
-          
-          IMPORTANT: Stop after 'Proposed Plan'. Do not implement yet."
-          
-          echo "ENHANCED_PROMPT<<EOF" >> $GITHUB_OUTPUT
-          echo "$FULL_PROMPT" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
 
-      - name: Run AI Agent (Unified Script)
+          ### TASK:
+          ${PROMPT}
+
+          IMPORTANT: Stop after 'Proposed Plan'. Do not implement yet."
+
+          {
+            echo "ENHANCED_PROMPT<<EOF"
+            echo "$FULL_PROMPT"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run AI agent
         id: agent_plan_run
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -201,41 +181,74 @@ jobs:
           ENHANCED_PROMPT: ${{ steps.prep_agent.outputs.ENHANCED_PROMPT }}
         run: |
           set +e
-          OUTPUT_FILE=$(mktemp)
-          ERROR_FILE=$(mktemp)
-          
-          echo "Running agent with Runtime: $RUNTIME"
-          
-          ./scripts/agent.sh \
+          OUTPUT_FILE="$(mktemp)"
+          ERROR_FILE="$(mktemp)"
+
+          HEADLESS=true ./scripts/run-phase.sh \
             --runtime "$RUNTIME" \
             --role "$ROLE" \
+            --phase plan \
             "$ENHANCED_PROMPT" \
             > "$OUTPUT_FILE" 2> "$ERROR_FILE"
-          
+
           EXIT_CODE=$?
-          
-          echo "PLAN_OUTPUT<<EOF" >> $GITHUB_OUTPUT
-          cat "$OUTPUT_FILE" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-          
-          echo "PLAN_ERROR<<EOF" >> $GITHUB_OUTPUT
-          cat "$ERROR_FILE" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-          
-          echo "EXIT_CODE=$EXIT_CODE" >> $GITHUB_OUTPUT
-          
+
+          {
+            echo "PLAN_OUTPUT<<EOF"
+            cat "$OUTPUT_FILE"
+            echo "EOF"
+            echo "PLAN_ERROR<<EOF"
+            cat "$ERROR_FILE"
+            echo "EOF"
+            echo "EXIT_CODE=$EXIT_CODE"
+          } >> "$GITHUB_OUTPUT"
+
           mkdir -p plan-output-temp
           cp "$OUTPUT_FILE" plan-output-temp/output.txt
           cp "$ERROR_FILE" plan-output-temp/error.txt
           echo "$EXIT_CODE" > plan-output-temp/exit_code.txt
 
+          if [ "$EXIT_CODE" -ne 0 ]; then
+            exit "$EXIT_CODE"
+          fi
+
       - name: Display plan output
         if: steps.agent_plan_run.outputs.PLAN_OUTPUT != ''
         run: |
-          echo "## 🤖 AI Agent Plan Output" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          cat plan-output-temp/output.txt >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "## AI Agent Plan Output" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat plan-output-temp/output.txt >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save context artifacts
+        env:
+          PROMPT: ${{ steps.context.outputs.PROMPT }}
+          ROLE: ${{ steps.context.outputs.ROLE }}
+          RUNTIME: ${{ steps.context.outputs.RUNTIME }}
+          JIRA_KEY: ${{ steps.context.outputs.JIRA_KEY }}
+        run: |
+          mkdir -p plan-context
+          printf '%s\n' "$PROMPT" > plan-context/prompt.txt
+          printf '%s\n' "$ROLE" > plan-context/role.txt
+          printf '%s\n' "$RUNTIME" > plan-context/runtime.txt
+          printf '%s\n' "$JIRA_KEY" > plan-context/jira_ticket.txt
+
+      - name: Save plan state
+        run: |
+          mkdir -p plan-state
+
+          if [ -f tmp/state/active_plan.md ]; then
+            cp tmp/state/active_plan.md plan-state/active_plan.md
+          fi
+
+          if [ -f tmp/state/active_ticket.txt ]; then
+            cp tmp/state/active_ticket.txt plan-state/active_ticket.txt
+          fi
+
+          if [ ! -f plan-state/active_plan.md ]; then
+            echo "Missing tmp/state/active_plan.md after planning run." >&2
+            exit 1
+          fi
 
       - name: Upload plan artifact
         uses: actions/upload-artifact@v7
@@ -244,36 +257,47 @@ jobs:
           path: plan-output-temp/
           retention-days: 7
 
-      - name: Save Context Artifacts
-        run: |
-          mkdir -p plan-context
-          echo "${{ steps.prep_agent.outputs.ENHANCED_PROMPT }}" > plan-context/prompt.txt
-          echo "${{ steps.context.outputs.ROLE }}" > plan-context/role.txt
-          echo "${{ steps.context.outputs.RUNTIME }}" > plan-context/runtime.txt
-          echo "${{ steps.context.outputs.JIRA_KEY }}" > plan-context/jira_ticket.txt
-
-      - name: Upload Context
+      - name: Upload context artifact
         uses: actions/upload-artifact@v7
         with:
           name: agent-context
           path: plan-context/
+          retention-days: 7
+
+      - name: Upload state artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: agent-state
+          path: plan-state/
+          retention-days: 7
 
       - name: Post plan comment
         if: steps.context.outputs.ISSUE_NUMBER != ''
         uses: actions/github-script@v7
+        env:
+          ISSUE_NUMBER: ${{ steps.context.outputs.ISSUE_NUMBER }}
+          PLAN_OUTPUT: ${{ steps.agent_plan_run.outputs.PLAN_OUTPUT }}
         with:
           script: |
-            const issueNumber = '${{ steps.context.outputs.ISSUE_NUMBER }}';
-            const planOutput = `${{ steps.agent_plan_run.outputs.PLAN_OUTPUT }}`;
-            const isRevision = '${{ steps.context.outputs.IS_REVISION }}' === 'true';
-            
-            const header = isRevision ? '## 🔄 AI Agent Plan (Revised)' : '## 🤖 AI Agent Plan';
-            
-            const body = `${header}\n\n${planOutput}\n\n---\n**Run ID:** ${process.env.GITHUB_RUN_ID}\nTo proceed, comment: \`/proceed\``;
-            
-            github.rest.issues.createComment({
+            const issueNumber = Number(process.env.ISSUE_NUMBER);
+            const planOutput = process.env.PLAN_OUTPUT || '';
+
+            const body = `## AI Agent Plan
+
+            ${planOutput}
+
+            ---
+            **Run ID:** ${process.env.GITHUB_RUN_ID}
+
+            Next:
+            - Comment \`/proceed\` to implement the approved plan
+            - Comment \`/revise <feedback>\` to request plan changes
+
+            <!-- Agent Plan Run ID: ${process.env.GITHUB_RUN_ID} -->`;
+
+            await github.rest.issues.createComment({
               issue_number: issueNumber,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: body
+              body,
             });
