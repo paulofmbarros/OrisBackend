@@ -132,6 +132,25 @@ jobs:
           ATLASSIAN_MCP_CLIENT_ID: ${{ secrets.ATLASSIAN_MCP_CLIENT_ID }}
           ATLASSIAN_MCP_CLIENT_SECRET: ${{ secrets.ATLASSIAN_MCP_CLIENT_SECRET }}
 
+      - name: Configure phase MCP allowlist
+        env:
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          ATLASSIAN_MCP_URL: ${{ secrets.ATLASSIAN_MCP_URL }}
+          ATLASSIAN_MCP_CLIENT_ID: ${{ secrets.ATLASSIAN_MCP_CLIENT_ID }}
+          ATLASSIAN_MCP_CLIENT_SECRET: ${{ secrets.ATLASSIAN_MCP_CLIENT_SECRET }}
+        run: |
+          servers=""
+
+          if [ -n "$NOTION_API_KEY" ]; then
+            servers="notion"
+          fi
+
+          if [ -n "$ATLASSIAN_MCP_URL" ] && [ -n "$ATLASSIAN_MCP_CLIENT_ID" ] && [ -n "$ATLASSIAN_MCP_CLIENT_SECRET" ]; then
+            servers="${servers:+$servers,}atlassian-rovo-mcp-server"
+          fi
+
+          echo "AGENT_MCP_SERVERS_OVERRIDE=$servers" >> "$GITHUB_ENV"
+
       - name: Setup environment
         run: |
           chmod +x scripts/agent.sh
@@ -155,7 +174,7 @@ jobs:
           ### RULES:
           1. **READ THE CONTRACT**: Use your file system tools to read '${CONTRACT_FILE}' immediately.
           2. **MCP TOOLS**:
-             - Use Notion MCP to search for 'Domain Definition' and the Jira ticket key.
+             - If Notion MCP is available, use it to search for 'Domain Definition' and the Jira ticket key.
              - Summarize findings in 'Notion References'.
 
           ### TASK:
@@ -209,6 +228,10 @@ jobs:
           echo "$EXIT_CODE" > plan-output-temp/exit_code.txt
 
           if [ "$EXIT_CODE" -ne 0 ]; then
+            if [ -s "$ERROR_FILE" ]; then
+              echo "Plan phase stderr:" >&2
+              cat "$ERROR_FILE" >&2
+            fi
             exit "$EXIT_CODE"
           fi
 

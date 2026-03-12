@@ -448,7 +448,7 @@ case "$PHASE" in
         ;;
     esac
 export AGENT_PHASE="$PHASE"
-if [[ -n "${AGENT_MCP_SERVERS_OVERRIDE:-}" ]]; then
+if [[ "${AGENT_MCP_SERVERS_OVERRIDE+x}" == "x" ]]; then
   export AGENT_MCP_SERVERS="$AGENT_MCP_SERVERS_OVERRIDE"
 else
   export AGENT_MCP_SERVERS="$(resolve_phase_mcp_servers "$PHASE" "$PROMPT")"
