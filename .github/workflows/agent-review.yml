@@ -135,7 +135,7 @@ jobs:
           dotnet-version: '10.0.x'
 
       - name: Install Gemini CLI
-        run: npm install -g @google/gemini-cli
+        run: npm install -g --ignore-scripts @google/gemini-cli
 
       - name: Configure MCP servers
         run: |
