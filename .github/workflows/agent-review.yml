@@ -1,15 +1,13 @@
-name: AI Agent - Proceed with Implementation
+name: AI Agent - Review Phase
 
 on:
   issue_comment:
     types: [created]
 
 jobs:
-  proceed:
-    if: startsWith(github.event.comment.body, '/proceed')
+  review:
+    if: startsWith(github.event.comment.body, '/review')
     runs-on: ubuntu-latest
-    environment:
-      name: agent-implementation
     permissions:
       contents: write
       issues: write
@@ -49,7 +47,7 @@ jobs:
             }
 
             if (!planRunId) {
-              core.setFailed('Could not find the latest plan run. Generate or revise a plan before proceeding.');
+              core.setFailed('Could not find the latest plan run. Generate or revise a plan before review.');
               return;
             }
 
@@ -113,7 +111,6 @@ jobs:
 
           KEY_LOWER="$(printf '%s\n' "$JIRA_KEY" | tr '[:upper:]' '[:lower:]')"
           BRANCH_NAME="feature/$KEY_LOWER"
-
           echo "BRANCH_NAME=$BRANCH_NAME" >> "$GITHUB_OUTPUT"
 
           git config --global user.name "github-actions[bot]"
@@ -123,7 +120,8 @@ jobs:
           if git rev-parse --verify "origin/$BRANCH_NAME" >/dev/null 2>&1; then
             git checkout -B "$BRANCH_NAME" "origin/$BRANCH_NAME"
           else
-            git checkout -B "$BRANCH_NAME"
+            echo "Remote branch origin/$BRANCH_NAME was not found." >&2
+            exit 1
           fi
 
       - name: Setup Node.js
@@ -157,6 +155,21 @@ jobs:
             };
           }
 
+          if (
+            process.env.ATLASSIAN_MCP_URL &&
+            process.env.ATLASSIAN_MCP_CLIENT_ID &&
+            process.env.ATLASSIAN_MCP_CLIENT_SECRET
+          ) {
+            mcpServers['atlassian-rovo-mcp-server'] = {
+              url: process.env.ATLASSIAN_MCP_URL,
+              auth: {
+                type: 'oauth2',
+                clientId: process.env.ATLASSIAN_MCP_CLIENT_ID,
+                clientSecret: process.env.ATLASSIAN_MCP_CLIENT_SECRET,
+              },
+            };
+          }
+
           fs.writeFileSync(
             process.env.HOME + '/.gemini/settings.json',
             JSON.stringify({ mcpServers }, null, 2)
@@ -164,6 +177,23 @@ jobs:
           EOF
         env:
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          ATLASSIAN_MCP_URL: ${{ secrets.ATLASSIAN_MCP_URL }}
+          ATLASSIAN_MCP_CLIENT_ID: ${{ secrets.ATLASSIAN_MCP_CLIENT_ID }}
+          ATLASSIAN_MCP_CLIENT_SECRET: ${{ secrets.ATLASSIAN_MCP_CLIENT_SECRET }}
+
+      - name: Configure review environment
+        env:
+          ATLASSIAN_MCP_URL: ${{ secrets.ATLASSIAN_MCP_URL }}
+          ATLASSIAN_MCP_CLIENT_ID: ${{ secrets.ATLASSIAN_MCP_CLIENT_ID }}
+          ATLASSIAN_MCP_CLIENT_SECRET: ${{ secrets.ATLASSIAN_MCP_CLIENT_SECRET }}
+        run: |
+          if [ -n "$ATLASSIAN_MCP_URL" ] && [ -n "$ATLASSIAN_MCP_CLIENT_ID" ] && [ -n "$ATLASSIAN_MCP_CLIENT_SECRET" ]; then
+            echo "AGENT_GEMINI_POST_REVIEW_JIRA_COMMENT=true" >> "$GITHUB_ENV"
+          else
+            echo "AGENT_GEMINI_POST_REVIEW_JIRA_COMMENT=false" >> "$GITHUB_ENV"
+          fi
+
+          echo "AGENT_GEMINI_REQUIRE_REVIEW_JIRA_COMMENT=false" >> "$GITHUB_ENV"
 
       - name: Setup environment
         run: |
@@ -172,8 +202,8 @@ jobs:
           chmod +x scripts/runtimes/*.sh
           chmod +x scripts/lib/*.sh
 
-      - name: Run implementation phase
-        id: agent_implement
+      - name: Run review phase
+        id: agent_review
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -188,86 +218,85 @@ jobs:
           OUTPUT_FILE="$(mktemp)"
           ERROR_FILE="$(mktemp)"
 
-          IMPLEMENT_PROMPT="${PROMPT}"$'\n\n'"Approved plan. Proceed with implementation for ${JIRA_KEY}."
+          REVIEW_PROMPT="${PROMPT}"$'\n\n'"Review the implemented code for ${JIRA_KEY}. Approved. Apply the proposed review changes."
 
           HEADLESS=true ./scripts/run-phase.sh \
             --runtime "$RUNTIME" \
             --role "$ROLE" \
-            --phase implement \
-            "$IMPLEMENT_PROMPT" \
+            --phase review \
+            "$REVIEW_PROMPT" \
             > "$OUTPUT_FILE" 2> "$ERROR_FILE"
 
           EXIT_CODE=$?
 
           {
-            echo "IMPLEMENTATION_OUTPUT<<EOF"
+            echo "REVIEW_OUTPUT<<EOF"
             cat "$OUTPUT_FILE"
             echo "EOF"
-            echo "IMPLEMENTATION_ERROR<<EOF"
+            echo "REVIEW_ERROR<<EOF"
             cat "$ERROR_FILE"
             echo "EOF"
             echo "EXIT_CODE=$EXIT_CODE"
           } >> "$GITHUB_OUTPUT"
 
-          mkdir -p implementation-artifact
-          cp "$OUTPUT_FILE" implementation-artifact/output.txt
-          cp "$ERROR_FILE" implementation-artifact/error.txt
-          echo "$EXIT_CODE" > implementation-artifact/exit_code.txt
+          mkdir -p review-artifact
+          cp "$OUTPUT_FILE" review-artifact/output.txt
+          cp "$ERROR_FILE" review-artifact/error.txt
+          echo "$EXIT_CODE" > review-artifact/exit_code.txt
 
           if [ "$EXIT_CODE" -ne 0 ]; then
             exit "$EXIT_CODE"
           fi
 
-      - name: Commit and push changes
+      - name: Commit and push review fixes
         run: |
           BRANCH_NAME="${{ steps.setup_branch.outputs.BRANCH_NAME }}"
           git add .
           if ! git diff --cached --quiet; then
-            git commit -m "feat: implementation for ${{ steps.plan_context.outputs.JIRA_KEY }}"
+            git commit -m "fix: review updates for ${{ steps.plan_context.outputs.JIRA_KEY }}"
             git push origin "$BRANCH_NAME"
           else
-            echo "No changes to commit."
+            echo "No review changes to commit."
           fi
 
-      - name: Upload implementation artifact
+      - name: Upload review artifact
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: agent-implementation
-          path: implementation-artifact/
+          name: agent-review
+          path: review-artifact/
           retention-days: 7
 
-      - name: Display implementation output
+      - name: Display review output
         if: always()
         run: |
-          if [ -f implementation-artifact/output.txt ]; then
-            echo "## Implementation Output" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f review-artifact/output.txt ]; then
+            echo "## Review Output" >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
-            cat implementation-artifact/output.txt >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-          if [ -s implementation-artifact/error.txt ]; then
-            echo "## Implementation Errors" >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-            cat implementation-artifact/error.txt >> "$GITHUB_STEP_SUMMARY"
+            cat review-artifact/output.txt >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Post implementation summary
+          if [ -s review-artifact/error.txt ]; then
+            echo "## Review Errors" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            cat review-artifact/error.txt >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Post review summary
         if: success()
         uses: actions/github-script@v7
         with:
           script: |
-            const body = `## AI Agent Implementation Complete
+            const body = `## AI Agent Review Complete
 
-            The implementation phase finished for \`${{ steps.plan_context.outputs.JIRA_KEY }}\`.
+            The review phase finished for \`${{ steps.plan_context.outputs.JIRA_KEY }}\`.
 
             Next:
-            - Comment \`/review\` to run the automated review phase
-            - Comment \`/qa\` to run the QA phase when the branch is ready
+            - Comment \`/qa\` to run the QA phase
 
-            <!-- Agent Implement Run ID: ${process.env.GITHUB_RUN_ID} -->`;
+            <!-- Agent Review Run ID: ${process.env.GITHUB_RUN_ID} -->`;
 
             await github.rest.issues.createComment({
               issue_number: context.payload.issue.number,
