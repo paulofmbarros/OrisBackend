@@ -183,17 +183,26 @@ jobs:
 
       - name: Configure review environment
         env:
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
           ATLASSIAN_MCP_URL: ${{ secrets.ATLASSIAN_MCP_URL }}
           ATLASSIAN_MCP_CLIENT_ID: ${{ secrets.ATLASSIAN_MCP_CLIENT_ID }}
           ATLASSIAN_MCP_CLIENT_SECRET: ${{ secrets.ATLASSIAN_MCP_CLIENT_SECRET }}
         run: |
+          servers="sonarqube"
+
+          if [ -n "$NOTION_API_KEY" ]; then
+            servers="notion,$servers"
+          fi
+
           if [ -n "$ATLASSIAN_MCP_URL" ] && [ -n "$ATLASSIAN_MCP_CLIENT_ID" ] && [ -n "$ATLASSIAN_MCP_CLIENT_SECRET" ]; then
             echo "AGENT_GEMINI_POST_REVIEW_JIRA_COMMENT=true" >> "$GITHUB_ENV"
+            servers="${servers:+$servers,}atlassian-rovo-mcp-server"
           else
             echo "AGENT_GEMINI_POST_REVIEW_JIRA_COMMENT=false" >> "$GITHUB_ENV"
           fi
 
           echo "AGENT_GEMINI_REQUIRE_REVIEW_JIRA_COMMENT=false" >> "$GITHUB_ENV"
+          echo "AGENT_MCP_SERVERS_OVERRIDE=$servers" >> "$GITHUB_ENV"
 
       - name: Setup environment
         run: |
@@ -245,6 +254,10 @@ jobs:
           echo "$EXIT_CODE" > review-artifact/exit_code.txt
 
           if [ "$EXIT_CODE" -ne 0 ]; then
+            if [ -s "$ERROR_FILE" ]; then
+              echo "Review phase stderr:" >&2
+              cat "$ERROR_FILE" >&2
+            fi
             exit "$EXIT_CODE"
           fi
 

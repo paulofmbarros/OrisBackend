@@ -190,13 +190,17 @@ jobs:
           ATLASSIAN_MCP_CLIENT_ID: ${{ secrets.ATLASSIAN_MCP_CLIENT_ID }}
           ATLASSIAN_MCP_CLIENT_SECRET: ${{ secrets.ATLASSIAN_MCP_CLIENT_SECRET }}
         run: |
+          servers="postman"
+
           if [ -n "$ATLASSIAN_MCP_URL" ] && [ -n "$ATLASSIAN_MCP_CLIENT_ID" ] && [ -n "$ATLASSIAN_MCP_CLIENT_SECRET" ]; then
             echo "AGENT_GEMINI_POST_QA_JIRA_COMMENT=true" >> "$GITHUB_ENV"
+            servers="${servers:+$servers,}atlassian-rovo-mcp-server"
           else
             echo "AGENT_GEMINI_POST_QA_JIRA_COMMENT=false" >> "$GITHUB_ENV"
           fi
 
           echo "AGENT_GEMINI_REQUIRE_QA_JIRA_COMMENT=false" >> "$GITHUB_ENV"
+          echo "AGENT_MCP_SERVERS_OVERRIDE=$servers" >> "$GITHUB_ENV"
 
       - name: Setup environment
         run: |
@@ -249,6 +253,10 @@ jobs:
           echo "$EXIT_CODE" > qa-artifact/exit_code.txt
 
           if [ "$EXIT_CODE" -ne 0 ]; then
+            if [ -s "$ERROR_FILE" ]; then
+              echo "QA phase stderr:" >&2
+              cat "$ERROR_FILE" >&2
+            fi
             exit "$EXIT_CODE"
           fi
 

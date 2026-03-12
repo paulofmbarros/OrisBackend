@@ -165,6 +165,18 @@ jobs:
         env:
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
 
+      - name: Configure phase MCP allowlist
+        env:
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+        run: |
+          servers=""
+
+          if [ -n "$NOTION_API_KEY" ]; then
+            servers="notion"
+          fi
+
+          echo "AGENT_MCP_SERVERS_OVERRIDE=$servers" >> "$GITHUB_ENV"
+
       - name: Setup environment
         run: |
           chmod +x scripts/agent.sh
@@ -215,6 +227,10 @@ jobs:
           echo "$EXIT_CODE" > implementation-artifact/exit_code.txt
 
           if [ "$EXIT_CODE" -ne 0 ]; then
+            if [ -s "$ERROR_FILE" ]; then
+              echo "Implementation phase stderr:" >&2
+              cat "$ERROR_FILE" >&2
+            fi
             exit "$EXIT_CODE"
           fi
 
