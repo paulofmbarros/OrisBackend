@@ -13,6 +13,9 @@ public class PlannedExerciseConfiguration : IEntityTypeConfiguration<PlannedExer
         builder.Property(p => p.ExerciseId).IsRequired();
         builder.Property(p => p.TrainingSessionId).IsRequired();
         builder.Property(p => p.Sets).IsRequired();
+        builder.Property(p => p.Order).IsRequired();
+        builder.Property(p => p.SuggestedLoad);
+        builder.Property(p => p.RestTimeSeconds);
 
         builder.OwnsOne(p => p.TargetRepRange, r =>
         {

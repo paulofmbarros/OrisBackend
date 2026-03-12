@@ -52,6 +52,9 @@ public class GenerateWorkoutHandlerTests
         _userRepositoryMock.Setup(x => x.GetByIdAsync(userId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(user);
 
+        _sessionRepositoryMock.Setup(x => x.HasActiveSessionForDateAsync(userId, It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
         _sessionRepositoryMock.Setup(x => x.GetActiveSessionByUserIdAsync(userId, It.IsAny<CancellationToken>()))
             .ReturnsAsync((TrainingSession?)null);
 
@@ -119,5 +122,28 @@ public class GenerateWorkoutHandlerTests
         // Assert
         result.IsFailure.ShouldBeTrue();
         result.Error.Code.ShouldBe("TrainingSession.ActiveExists");
+    }
+
+    [Fact]
+    public async Task Handle_ShouldReturnFailure_WhenActiveSessionForDateExists()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        var user = new User("test@test.com");
+        var scheduledDate = DateTime.UtcNow;
+        var command = new GenerateWorkoutCommand(userId, scheduledDate, SessionType.Upper);
+
+        _userRepositoryMock.Setup(x => x.GetByIdAsync(userId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(user);
+
+        _sessionRepositoryMock.Setup(x => x.HasActiveSessionForDateAsync(userId, scheduledDate, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        // Act
+        var result = await _handler.Handle(command, CancellationToken.None);
+
+        // Assert
+        result.IsFailure.ShouldBeTrue();
+        result.Error.Code.ShouldBe("TrainingSession.DailySessionAlreadyExists");
     }
 }

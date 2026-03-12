@@ -44,6 +44,12 @@ public class GenerateWorkoutHandler : ICommandHandler<GenerateWorkoutCommand, Re
             return Result<TrainingSessionDto>.Failure(new Error("User.NotFound", $"User with ID {userId} was not found."));
         }
 
+        var sessionExists = await _sessionRepository.HasActiveSessionForDateAsync(userId, request.ScheduledDate, cancellationToken);
+        if (sessionExists)
+        {
+            return Result<TrainingSessionDto>.Failure(new Error("TrainingSession.DailySessionAlreadyExists", "An active training session already exists for this date."));
+        }
+
         var activeSession = await _sessionRepository.GetActiveSessionByUserIdAsync(userId, cancellationToken);
         if (activeSession != null)
         {

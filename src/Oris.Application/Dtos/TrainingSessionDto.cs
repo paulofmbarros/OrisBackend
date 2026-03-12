@@ -5,5 +5,7 @@ public record TrainingSessionDto(
     DateTime Date,
     string SessionType,
     bool IsCompleted,
+    DateTime? LockedAt,
+    DateTime? CompletedAt,
     List<PlannedExerciseDto> PlannedExercises,
     List<ExercisePerformanceDto> Performances);

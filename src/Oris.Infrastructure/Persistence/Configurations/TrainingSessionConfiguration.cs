@@ -13,7 +13,11 @@ public class TrainingSessionConfiguration : IEntityTypeConfiguration<TrainingSes
         builder.Property(t => t.UserId).IsRequired();
         builder.Property(t => t.ScheduledDate).IsRequired();
         builder.Property(t => t.Type).IsRequired();
-        builder.Property(t => t.IsCompleted).IsRequired();
+        builder.Property(t => t.LockedAt);
+        builder.Property(t => t.CompletedAt);
+
+        builder.Ignore(t => t.IsCompleted);
+        builder.Ignore(t => t.IsLocked);
 
         builder.HasMany(t => t.PlannedExercises)
             .WithOne()

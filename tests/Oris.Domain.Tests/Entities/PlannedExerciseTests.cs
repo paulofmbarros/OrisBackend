@@ -17,13 +17,14 @@ public class PlannedExerciseTests
         var repRange = new RepetitionRange(8, 12);
 
         // Act
-        var planned = new PlannedExercise(sessionId, exerciseId, sets, repRange);
+        var planned = new PlannedExercise(sessionId, exerciseId, sets, repRange, 0);
 
         // Assert
         planned.TrainingSessionId.ShouldBe(sessionId);
         planned.ExerciseId.ShouldBe(exerciseId);
         planned.Sets.ShouldBe(sets);
         planned.TargetRepRange.ShouldBe(repRange);
+        planned.Order.ShouldBe(0);
     }
 
     [Theory]
@@ -33,7 +34,7 @@ public class PlannedExerciseTests
     {
         // Act & Assert
         Should.Throw<ArgumentException>(() =>
-            new PlannedExercise(Guid.NewGuid(), Guid.NewGuid(), sets, new RepetitionRange(8, 12)));
+            new PlannedExercise(Guid.NewGuid(), Guid.NewGuid(), sets, new RepetitionRange(8, 12), 0));
     }
 
     [Fact]
@@ -41,6 +42,6 @@ public class PlannedExerciseTests
     {
         // Act & Assert
         Should.Throw<ArgumentNullException>(() =>
-            new PlannedExercise(Guid.NewGuid(), Guid.NewGuid(), 3, null!));
+            new PlannedExercise(Guid.NewGuid(), Guid.NewGuid(), 3, null!, 0));
     }
 }
