@@ -54,7 +54,7 @@ jobs:
             core.setOutput('run_id', planRunId);
 
       - name: Download plan context
-        uses: dawidd6/action-download-artifact@v3
+        uses: dawidd6/action-download-artifact@v18
         with:
           name: agent-context
           path: plan-context/
@@ -63,7 +63,7 @@ jobs:
           if_no_artifact_found: fail
 
       - name: Download plan state
-        uses: dawidd6/action-download-artifact@v3
+        uses: dawidd6/action-download-artifact@v18
         with:
           name: agent-state
           path: plan-state/
