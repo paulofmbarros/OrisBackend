@@ -45,7 +45,7 @@ jobs:
 
       - name: Find build run
         id: find_build
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         env:
           TARGET_RUN_NUMBER: ${{ inputs.run_number }}
         with:
