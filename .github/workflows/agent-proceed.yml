@@ -19,14 +19,14 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
       - name: Find latest plan run
         id: find_plan
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const comments = await github.rest.issues.listComments({
@@ -56,7 +56,7 @@ jobs:
             core.setOutput('run_id', planRunId);
 
       - name: Download plan context
-        uses: dawidd6/action-download-artifact@v3
+        uses: dawidd6/action-download-artifact@v18
         with:
           name: agent-context
           path: plan-context/
@@ -65,7 +65,7 @@ jobs:
           if_no_artifact_found: fail
 
       - name: Download plan state
-        uses: dawidd6/action-download-artifact@v3
+        uses: dawidd6/action-download-artifact@v18
         with:
           name: agent-state
           path: plan-state/
@@ -272,7 +272,7 @@ jobs:
 
       - name: Post implementation summary
         if: success()
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const body = `## AI Agent Implementation Complete
