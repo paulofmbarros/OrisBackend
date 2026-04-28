@@ -194,7 +194,7 @@ jobs:
       # Build provenance (supply-chain security)
       # -----------------------------
       - name: Generate build provenance
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: ./publish/**
 
