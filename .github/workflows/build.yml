@@ -34,7 +34,7 @@ jobs:
       # -----------------------------
       # Checkout (pinned)
       # -----------------------------
-      - uses: actions/checkout@v4.1.1
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -106,7 +106,7 @@ jobs:
       # Java (Sonar dependency)
       # -----------------------------
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: 17
           distribution: 'zulu'
@@ -194,7 +194,7 @@ jobs:
       # Build provenance (supply-chain security)
       # -----------------------------
       - name: Generate build provenance
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: ./publish/**
 
@@ -236,7 +236,7 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v4.1.1
+      - uses: actions/checkout@v6
 
       - uses: actions/setup-dotnet@v4
         with:
