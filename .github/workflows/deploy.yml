@@ -37,7 +37,7 @@ jobs:
       # Checkout
       # --------------------------------------------------
       - name: Checkout code
-        uses: actions/checkout@v4.1.1
+        uses: actions/checkout@v6
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
@@ -83,7 +83,7 @@ jobs:
       # --------------------------------------------------
       - name: Find successful build
         id: find_build
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         env:
           INPUT_RUN_ID: ${{ inputs.run_id }}
           COMMIT_SHA: ${{ steps.version.outputs.commit_sha }}
@@ -432,7 +432,7 @@ jobs:
       # --------------------------------------------------
       - name: Record deployment
         if: success()
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         env:
           COMMIT_SHA: ${{ steps.version.outputs.commit_sha }}
           VERSION: ${{ steps.version.outputs.version }}
